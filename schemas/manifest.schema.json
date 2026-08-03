@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wildorder.dev/schemas/program-manifest.schema.json",
+  "title": "Program manifest",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["program", "successCriteria", "workstreams"],
+  "properties": {
+    "program": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "name", "status"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "status": { "type": "string", "minLength": 1 },
+        "created": { "type": "string" }
+      }
+    },
+    "successCriteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "description"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^SC-[0-9]{2,}$" },
+          "description": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "packages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["name", "path"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "workstreams": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "name", "taskFile", "status", "dependencies"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^WS-[0-9]{2,}$" },
+          "name": { "type": "string", "minLength": 1 },
+          "taskFile": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "minLength": 1 },
+          "size": { "enum": ["S", "M", "L"] },
+          "dependencies": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^WS-[0-9]{2,}$" }
+          },
+          "packages": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "outOfScope": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

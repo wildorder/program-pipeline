@@ -16,7 +16,26 @@ Inspect the root. If it contains source code, a populated README, or other
 project documentation, treat this as a **brownfield adoption**. An empty or
 near-empty directory is a **greenfield initialization**.
 
-## Step 2 — Gather project information
+## Step 2 — Ask about version control upfront
+
+Check whether the root is inside a git repository
+(`git rev-parse --is-inside-work-tree`). Ask these questions now, alongside
+the project questions — never defer them to a suggested next step:
+
+1. If it is **not** a repository: "Initialize a git repository here?" If yes,
+   run `git init` before any scaffolding so everything that follows is
+   tracked from the start.
+2. In all cases: "Commit the pipeline setup when finished?" If yes, plan to
+   commit at the end of this workflow.
+3. Brownfield with uncommitted changes: point out the dirty tree and confirm
+   that the final commit should include only the files this setup created or
+   modified, keeping the user's in-progress work out of it.
+
+Record the answers and apply them in Step 7. If the user declines a
+repository entirely, warn that build checkpoints and rollback will be
+unavailable, then proceed.
+
+## Step 3 — Gather project information
 
 The initializer resolves defaults on its own: name and description from
 `package.json`, and the stack by scanning manifests (package.json,
@@ -28,7 +47,9 @@ tsconfig.json, pyproject.toml, go.mod, Cargo.toml).
   about gaps or corrections. Do not re-ask for what the repository already
   declares.
 
-## Step 3 — Run the deterministic initializer
+Ask the Step 2 and Step 3 questions together in one message when possible.
+
+## Step 4 — Run the deterministic initializer
 
 ```powershell
 npm exec program-pipeline -- init --cwd "{project-root}"
@@ -50,7 +71,7 @@ The universal directives come from the packaged template by default; a user
 override is honored from `~/.program-pipeline/universal-directives.md`, or
 pass `--directives <path>` when the user names a directives file.
 
-## Step 4 — Confirm workflow skills are present
+## Step 5 — Confirm workflow skills are present
 
 Check whether the project already contains installed pipeline skills
 (`.cursor/skills/`, `.claude/skills/`, or `skills/`). If any target is
@@ -68,7 +89,7 @@ npm exec program-pipeline -- install --cwd "{project-root}" --targets {chosen}
 Never use `--force` unless the user explicitly approves replacing a reported
 skill conflict.
 
-## Step 5 — Brownfield enrichment
+## Step 6 — Brownfield enrichment
 
 Skip this step for greenfield projects.
 
@@ -90,7 +111,16 @@ Skip this step for greenfield projects.
    add any the user names. Planning workflows read every listed document, so
    the list should be signal, not bulk.
 
-## Step 6 — Report
+## Step 7 — Apply the version-control decisions
+
+Execute what the user approved in Step 2:
+
+- If a commit was approved, stage exactly the files this setup created or
+  modified and commit with a message like `chore: adopt program pipeline`.
+  Do not stage unrelated in-progress changes.
+- If the user declined, leave the working tree as is.
+
+## Step 8 — Report
 
 Report:
 
@@ -98,4 +128,5 @@ Report:
 2. Skill conflicts, if any.
 3. Warnings from the initializer.
 4. Brownfield: the as-built and vision drafts produced and any assumptions.
-5. Next step: invoke `/plan-program` for the first program.
+5. Git actions taken (repository initialized, setup committed) or declined.
+6. Next step: invoke `/plan-program` for the first program.

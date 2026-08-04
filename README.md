@@ -3,6 +3,24 @@
 A provider-neutral TypeScript CLI and portable Agent Skills package for planning,
 validating, building, and documenting engineering programs.
 
+## Get started
+
+```powershell
+# 1. Add the package to your project
+npm install --save-dev @wildorder/program-pipeline
+
+# 2. Install the workflow skills for your agent (narrow --targets to what you use)
+npm exec program-pipeline -- install --cwd . --targets claude
+
+# 3. In your agent, run the guided setup
+#    /init-project
+```
+
+`/init-project` interviews you for the project details, runs the deterministic
+`init` scaffolding under the hood, and finishes by pointing you at
+`/plan-program` to plan your first program. From there the flow is:
+plan → author workstreams → validate → review → build → update as-built.
+
 ## Install
 
 Published on the public npm registry as

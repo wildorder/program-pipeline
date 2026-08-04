@@ -36,6 +36,11 @@ When a configured model name is reported unavailable, obsolete, or renamed,
 propose the current equivalent, update `pipeline.config.json` after the user
 approves, and retry — never hand-patch model names into skill files.
 
+If the validator fails for operational reasons — cost or usage limits, rate
+limiting, authentication — stop at the first failure and report the error
+and options. Never silently validate with a different model than configured;
+same-model validation requires the user's explicit approval.
+
 ## Step 1 — Identify the program
 
 Use the supplied program ID. If none was provided, ask which program to validate and wait for the answer.

@@ -79,6 +79,16 @@ Skip this step with `--validate-only`.
 
 Generate and save all specs. Do not stop for approval after each one. Parallelize independent workstreams when the host supports parallel agents. If ambiguity requires judgment, make the best supported assumption, continue, and record it for the final report.
 
+**Fail fast on role errors.** If a subagent or the configured author model
+fails for operational reasons — cost or usage limits, rate limiting,
+authentication, model unavailable — stop the entire authoring run at the
+first failure. Do not spin up further subagents, do not retry blindly, and
+never silently author the specs yourself with a different model: that swaps
+the configured author for another model without consent. Report which
+workstream failed, the exact error, and the options — wait and retry, change
+`models.author` in `pipeline.config.json`, or explicitly approve continuing
+with the current session model — and wait for the user's decision.
+
 The section names, ID formats, and file annotations below are the contract
 enforced by `program-pipeline validate`; the validator is canonical, so do not
 rename its required sections (`Traceability`, `Files Touched`, `Tests`,

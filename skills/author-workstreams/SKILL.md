@@ -35,6 +35,7 @@ Read:
   `docs/vision.md` only when no configuration exists.
 - `docs/as-built.md`, when present
 - `AGENTS.md`
+- Every document listed in `contextDocs` from `pipeline.config.json`, when present
 
 ## 3. Author every spec
 

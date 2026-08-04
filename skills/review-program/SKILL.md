@@ -24,6 +24,7 @@ Read:
 - `docs/programs/{program-id}-manifest.json`.
 - Every workstream spec under `tasks/{program-id}/`.
 - `docs/as-built.md`, when present.
+- Every document listed in `contextDocs` from `pipeline.config.json`, when present.
 
 ## 3. Analyze with evidence
 

@@ -17,6 +17,7 @@ Read:
   product vision. Use `docs/vision.md` only when no configuration exists.
 - `docs/as-built.md`, when present, for current system state.
 - `AGENTS.md` for repository directives and conventions.
+- Every document listed in `contextDocs` from `pipeline.config.json`, when present.
 
 If no vision document exists at the resolved path, stop. Explain that it should contain the product
 description, architecture, target users, API surface, data model, phase scope,

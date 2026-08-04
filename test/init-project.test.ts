@@ -99,6 +99,136 @@ describe("initProject", () => {
     });
   });
 
+  it("merges the universal block into an existing AGENTS.md and is idempotent", async () => {
+    const root = await mkdtemp(join(tmpdir(), "program-pipeline-init-"));
+    temporaryRoots.push(root);
+    await writeFile(
+      join(root, "AGENTS.md"),
+      "# House rules\n\nAlways use tabs.\n",
+      "utf8",
+    );
+
+    const first = await initProject({
+      cwd: root,
+      home: join(root, "home"),
+      name: "Acme",
+      stack: "TypeScript/Node",
+      description: "Coordinates acme delivery.",
+    });
+    expect(first.updated).toContain("AGENTS.md (universal block added)");
+
+    const merged = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect(merged.startsWith("<!-- BEGIN UNIVERSAL")).toBe(true);
+    expect(merged).toContain("VERIFY BEFORE CLAIMING COMPLETION");
+    expect(merged).toContain("# House rules");
+    expect(merged).toContain("Always use tabs.");
+
+    const second = await initProject({
+      cwd: root,
+      home: join(root, "home"),
+      name: "Acme",
+      stack: "TypeScript/Node",
+      description: "Coordinates acme delivery.",
+    });
+    expect(second.updated).toEqual([]);
+    expect(second.skipped).toContain("AGENTS.md");
+  });
+
+  it("refreshes an outdated universal block without touching other content", async () => {
+    const root = await mkdtemp(join(tmpdir(), "program-pipeline-init-"));
+    temporaryRoots.push(root);
+    await writeFile(
+      join(root, "AGENTS.md"),
+      "<!-- BEGIN UNIVERSAL — source: old -->\nOld directives.\n<!-- END UNIVERSAL -->\n\n## Project notes\n\nKeep these.\n",
+      "utf8",
+    );
+
+    const result = await initProject({
+      cwd: root,
+      home: join(root, "home"),
+      name: "Acme",
+      stack: "TypeScript/Node",
+      description: "Coordinates acme delivery.",
+    });
+
+    expect(result.updated).toContain("AGENTS.md (universal block updated)");
+    const content = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect(content).not.toContain("Old directives.");
+    expect(content).toContain("VERIFY BEFORE CLAIMING COMPLETION");
+    expect(content).toContain("Keep these.");
+  });
+
+  it("resolves name and description from package.json and detects the stack", async () => {
+    const root = await mkdtemp(join(tmpdir(), "program-pipeline-init-"));
+    temporaryRoots.push(root);
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({
+        name: "acme-app",
+        description: "Acme delivery app.",
+        engines: { node: ">=20" },
+        dependencies: { express: "^5.1.0" },
+        devDependencies: { typescript: "^5.9.0", vitest: "^4.0.0" },
+      }),
+      "utf8",
+    );
+
+    const result = await initProject({
+      cwd: root,
+      home: join(root, "home"),
+    });
+    expect(result.warnings).toEqual([]);
+
+    const agents = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect(agents).toContain("## Project: acme-app");
+    expect(agents).toContain("TypeScript on Node >=20");
+    expect(agents).toContain("Express");
+    expect(agents).toContain("| express | ^5.1.0 |");
+    await expect(
+      readFile(join(root, "docs", "vision.md"), "utf8"),
+    ).resolves.toContain("Acme delivery app.");
+  });
+
+  it("fails clearly when no name can be resolved", async () => {
+    const root = await mkdtemp(join(tmpdir(), "program-pipeline-init-"));
+    temporaryRoots.push(root);
+
+    await expect(
+      initProject({ cwd: root, home: join(root, "home") }),
+    ).rejects.toThrow("pass --name");
+  });
+
+  it("records existing markdown documentation as contextDocs", async () => {
+    const root = await mkdtemp(join(tmpdir(), "program-pipeline-init-"));
+    temporaryRoots.push(root);
+    await writeFile(join(root, "README.md"), "# Readme\n", "utf8");
+    await mkdir(join(root, "docs", "adr"), { recursive: true });
+    await writeFile(
+      join(root, "docs", "adr", "001-choice.md"),
+      "# ADR\n",
+      "utf8",
+    );
+    await mkdir(join(root, "docs", "programs"), { recursive: true });
+    await writeFile(
+      join(root, "docs", "programs", "old-program.md"),
+      "# Old\n",
+      "utf8",
+    );
+
+    await initProject({
+      cwd: root,
+      home: join(root, "home"),
+      name: "Acme",
+      stack: "TypeScript/Node",
+      description: "Coordinates acme delivery.",
+    });
+
+    const config = JSON.parse(
+      await readFile(join(root, "pipeline.config.json"), "utf8"),
+    ) as { contextDocs: string[] };
+    expect(config.contextDocs).toEqual(["README.md", "docs/adr/001-choice.md"]);
+  });
+
   it("uses the packaged universal directives by default", async () => {
     const root = await mkdtemp(join(tmpdir(), "program-pipeline-init-"));
     temporaryRoots.push(root);

@@ -41,17 +41,29 @@ npx program-pipeline --help
 
 ### `init`
 
-Create the standard program-pipeline structure and starter files in a project.
-Existing files are skipped.
-
-The generated `AGENTS.md` embeds a universal directives block. It is resolved
-in this order: an explicit `--directives <path>` override, then
-`~/.program-pipeline/universal-directives.md`, then the directives template
-packaged with this package.
+Create the standard program-pipeline structure in a new project, or adopt an
+existing one. Existing files are never overwritten.
 
 ```powershell
-npm exec program-pipeline -- init --name "Acme Dashboard" --stack "TypeScript/Node" --description "Operations dashboards for growing teams." --cwd .
+npm exec program-pipeline -- init --cwd .
+npm exec program-pipeline -- init --cwd . --name "Acme Dashboard" --stack "TypeScript/Node" --description "Operations dashboards for growing teams."
 ```
+
+All identity flags are optional: `--name` and `--description` default to the
+`package.json` values, and `--stack` defaults to a summary detected from the
+repository (package manifests, tsconfig, pyproject, go.mod, Cargo.toml). The
+dependency table in `AGENTS.md` is prefilled from `package.json`.
+
+Brownfield behavior: when `AGENTS.md` already exists, `init` merges rather
+than skips — it adds or refreshes only the marked `BEGIN/END UNIVERSAL`
+directives block and leaves every other line untouched. Existing markdown
+documentation (root-level `*.md` and `docs/**`) is recorded as `contextDocs`
+in `pipeline.config.json`, which the planning and validation workflows read.
+
+The universal directives block is resolved in this order: an explicit
+`--directives <path>` override, then
+`~/.program-pipeline/universal-directives.md`, then the directives template
+packaged with this package.
 
 ### `install`
 

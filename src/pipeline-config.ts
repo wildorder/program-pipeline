@@ -22,6 +22,7 @@ export const pipelineConfigSchema = z.object({
   requireApprovalBeforeBuild: z.boolean(),
   agent: agentSchema.optional(),
   verify: z.record(z.string(), z.string().min(1)).default({}),
+  contextDocs: z.array(z.string().min(1)).default([]),
   build: z
     .object({
       maxRecoveryAttempts: z.number().int().min(0).default(1),

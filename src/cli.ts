@@ -19,10 +19,18 @@ const program = new Command()
 
 program
   .command("init")
-  .description("Initialize a project with the program pipeline structure")
-  .requiredOption("--name <name>", "Project name")
-  .requiredOption("--stack <stack>", "Primary language and technology stack")
-  .requiredOption("--description <description>", "One-line product description")
+  .description(
+    "Initialize or adopt a project with the program pipeline structure",
+  )
+  .option("--name <name>", "Project name (default: package.json name)")
+  .option(
+    "--stack <stack>",
+    "Primary language and technology stack (default: detected from the repository)",
+  )
+  .option(
+    "--description <description>",
+    "One-line product description (default: package.json description)",
+  )
   .option("--cwd <path>", "Project directory", process.cwd())
   .option(
     "--directives <path>",
@@ -30,22 +38,25 @@ program
   )
   .action(
     async (options: {
-      name: string;
-      stack: string;
-      description: string;
+      name?: string;
+      stack?: string;
+      description?: string;
       cwd: string;
       directives?: string;
     }) => {
       const result = await initProject({
         cwd: options.cwd,
-        name: options.name,
-        stack: options.stack,
-        description: options.description,
+        ...(options.name === undefined ? {} : { name: options.name }),
+        ...(options.stack === undefined ? {} : { stack: options.stack }),
+        ...(options.description === undefined
+          ? {}
+          : { description: options.description }),
         ...(options.directives === undefined
           ? {}
           : { directivesPath: options.directives }),
       });
       for (const path of result.created) console.log(`created ${path}`);
+      for (const path of result.updated) console.log(`updated ${path}`);
       for (const path of result.skipped) console.log(`skipped ${path}`);
       for (const warning of result.warnings) console.warn(`warning ${warning}`);
     },

@@ -26,4 +26,4 @@ See `tasks/{program-id}/` for workstream specs.
 
 | Package | Version |
 |---------|---------|
-| [Package] | [Version] |
+{{DEPENDENCY_ROWS}}

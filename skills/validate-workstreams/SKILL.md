@@ -40,6 +40,7 @@ Read all of these files:
 - Every file in `tasks/{program-id}/`
 - `docs/as-built.md`, if it exists
 - `AGENTS.md`
+- Every document listed in `contextDocs` from `pipeline.config.json`, when present
 
 ## Step 3 — Run deterministic validation
 

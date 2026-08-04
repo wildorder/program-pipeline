@@ -60,7 +60,14 @@ implicit — it is the most consequential configuration in the pipeline:
 3. **Validator** — the model that independently validates specs. Written to
    `models.validator`. Recommend a different model or provider than the
    author to reduce correlated errors; if the user picks the same one, note
-   the tradeoff and respect the choice.
+   the tradeoff and respect the choice. When the validator is from a
+   different provider than the user's host can switch to (for example a
+   GPT validator while working in Claude Code), also ask for an external
+   agent command and write it to `validatorAgent`, for example
+   `{ "command": "codex", "args": ["exec", "--model", "gpt-sol"] }` — hosts
+   that can switch models in-host use `models.validator` directly, and hosts
+   that cannot run the external command instead (each bills through its own
+   account).
 
 If the user has no preference, record the host's current model for author,
 recommend a distinct validator, and leave the builder for the

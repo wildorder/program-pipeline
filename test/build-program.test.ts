@@ -91,6 +91,7 @@ async function fixture(options: FixtureOptions = {}): Promise<string> {
         visionPath: "docs/vision.md",
         requireApprovalBeforeBuild: options.requireApproval ?? false,
         agent: options.agent ?? { command: "fake-agent", args: ["--model", "sonnet"] },
+        validatorAgent: { command: "codex", args: ["exec", "--model", "gpt-sol"] },
         models: { author: "claude-code/opus", validator: "gpt-sol" },
         verify: options.verify ?? { test: "npm test" },
         ...(options.maxRecoveryAttempts === undefined

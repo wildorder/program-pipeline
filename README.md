@@ -111,6 +111,7 @@ Configure the runner in `pipeline.config.json`:
 ```json
 {
   "agent": { "command": "claude", "args": ["-p", "--model", "sonnet"], "promptMode": "stdin" },
+  "validatorAgent": { "command": "codex", "args": ["exec", "--model", "gpt-sol"] },
   "models": { "author": "claude-code/opus", "validator": "gpt-sol" },
   "verify": { "build": "npm run build", "test": "npm test" },
   "build": { "maxRecoveryAttempts": 1, "logDir": "build-logs" }
@@ -124,6 +125,13 @@ declares which model authors workstream specs and which validates them — the
 authoring and validation workflows read these as defaults and warn when the
 author and validator are the same model, since same-model validation weakens
 the gate.
+
+The validator works from any host: when the host can switch models in-host
+(for example Cursor), `models.validator` is honored directly and bills
+through the host; when it cannot (for example a cross-provider validator
+from Claude Code), the workflows fall back to running the `validatorAgent`
+command as a separate process, which bills through that CLI's own account.
+Same validator identity, host-appropriate mechanism.
 
 The agent receives each workstream prompt on stdin by default; set
 `"promptMode": "argument"` for agents that take the prompt as a positional

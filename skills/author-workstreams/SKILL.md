@@ -19,23 +19,33 @@ Parse these optional flags from the invocation:
 - `--author-model <id>`: use the requested available model for authoring when the host supports model selection.
 - `--validator-model <id>`: use the requested available model for validation when the host supports model selection.
 
-Resolve the author and validator in this order:
+Resolve the author from `--author-model`, then `models.author` in
+`pipeline.config.json`, then the host's current model.
 
-1. Explicit `--author-model` / `--validator-model` flags.
-2. `models.author` and `models.validator` from `pipeline.config.json`.
-3. Otherwise: the host's current model for authoring and an independent
-   validation pass.
+Resolve the validator in this order — stop at the first mechanism that
+works in the current host:
 
-Before authoring, state which model fills each role and where that choice
-came from (flag, config, or default), so the user can object before work
-begins.
+1. Explicit `--validator-model` flag, when the host can run that model.
+2. **In-host switch**: `models.validator` from `pipeline.config.json`, when
+   the host can select that model or spawn a subagent with it (billing flows
+   through the host).
+3. **External validator agent**: the `validatorAgent` command from
+   `pipeline.config.json`, run as a separate process — pipe it the
+   validation instructions plus the spec, manifest, and program document
+   contents, since it shares no session context (billing flows through that
+   CLI's own account). This is how a cross-provider validator works from
+   hosts that cannot switch providers.
+4. Otherwise: validate with the current model and report the validation as
+   same-model rather than independent.
+
+Before authoring, state which model fills each role, where the choice came
+from (flag, config, external agent, or default), and which mechanism will
+run the validator, so the user can object before work begins.
 
 **Guardrail — independent validation:** if the resolved validator is the same
 model as the author, warn that same-model validation weakens the gate
 (correlated errors) and ask whether to proceed anyway or pick a different
-validator. When the host cannot switch models or spawn a differently-modeled
-subagent, say so explicitly and report the validation as same-model rather
-than independent.
+validator.
 
 Do not assume provider-specific model names. If the user requests an
 unavailable model, stop and ask them to choose from the host's supported

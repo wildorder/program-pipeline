@@ -110,11 +110,20 @@ Configure the runner in `pipeline.config.json`:
 
 ```json
 {
-  "agent": { "command": "claude", "args": ["-p"], "promptMode": "stdin" },
+  "agent": { "command": "claude", "args": ["-p", "--model", "sonnet"], "promptMode": "stdin" },
+  "models": { "author": "claude-code/opus", "validator": "gpt-sol" },
   "verify": { "build": "npm run build", "test": "npm test" },
   "build": { "maxRecoveryAttempts": 1, "logDir": "build-logs" }
 }
 ```
+
+Model roles are explicit, not implicit: the `agent` block is the single
+source of truth for what builds each workstream (the runner prints the
+resolved agent line in dry-run, approval, and build output), while `models`
+declares which model authors workstream specs and which validates them — the
+authoring and validation workflows read these as defaults and warn when the
+author and validator are the same model, since same-model validation weakens
+the gate.
 
 The agent receives each workstream prompt on stdin by default; set
 `"promptMode": "argument"` for agents that take the prompt as a positional

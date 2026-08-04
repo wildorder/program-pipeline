@@ -19,7 +19,27 @@ Parse these optional flags from the invocation:
 - `--author-model <id>`: use the requested available model for authoring when the host supports model selection.
 - `--validator-model <id>`: use the requested available model for validation when the host supports model selection.
 
-By default, use the host's current model for authoring and an independent validation pass. When the host supports separate agents or model selection, prefer a high-reasoning author and a different capable validator to reduce correlated errors. Do not assume provider-specific model names. If the user requests an unavailable model, stop and ask them to choose from the host's supported models.
+Resolve the author and validator in this order:
+
+1. Explicit `--author-model` / `--validator-model` flags.
+2. `models.author` and `models.validator` from `pipeline.config.json`.
+3. Otherwise: the host's current model for authoring and an independent
+   validation pass.
+
+Before authoring, state which model fills each role and where that choice
+came from (flag, config, or default), so the user can object before work
+begins.
+
+**Guardrail — independent validation:** if the resolved validator is the same
+model as the author, warn that same-model validation weakens the gate
+(correlated errors) and ask whether to proceed anyway or pick a different
+validator. When the host cannot switch models or spawn a differently-modeled
+subagent, say so explicitly and report the validation as same-model rather
+than independent.
+
+Do not assume provider-specific model names. If the user requests an
+unavailable model, stop and ask them to choose from the host's supported
+models.
 
 ## 1. Identify the program
 

@@ -90,7 +90,8 @@ async function fixture(options: FixtureOptions = {}): Promise<string> {
         pipelineVersion: "0.1.0",
         visionPath: "docs/vision.md",
         requireApprovalBeforeBuild: options.requireApproval ?? false,
-        agent: options.agent ?? { command: "fake-agent" },
+        agent: options.agent ?? { command: "fake-agent", args: ["--model", "sonnet"] },
+        models: { author: "claude-code/opus", validator: "gpt-sol" },
         verify: options.verify ?? { test: "npm test" },
         ...(options.maxRecoveryAttempts === undefined
           ? {}
@@ -325,6 +326,21 @@ describe("buildProgram", () => {
 
     expect(report.result).toBe("PLANNED");
     expect(report.plan.map(({ id }) => id)).toEqual(["WS-01", "WS-02"]);
+    expect(report.agent).toBe("fake-agent --model sonnet");
+  });
+
+  it("surfaces the resolved agent at the approval gate", async () => {
+    const root = await fixture({ requireApproval: true });
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: pass,
+      verifyRunner: pass,
+    });
+
+    expect(report.result).toBe("APPROVAL_REQUIRED");
+    expect(report.agent).toBe("fake-agent --model sonnet");
   });
 
   it("aborts when no verify commands are configured", async () => {

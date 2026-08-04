@@ -41,6 +41,14 @@ Read `pipeline.config.json` in the project root. The runner requires:
 If either block is missing, show the user what to add and wait for approval
 before editing `pipeline.config.json`.
 
+**Model transparency:** the `agent` block is the single source of truth for
+which agent and model build every workstream. State it verbatim to the user
+in this step — for example "each workstream will be built by
+`claude -p --model sonnet`" — and note that changing it means editing the
+`agent` block. The runner also prints the resolved agent line in its dry-run
+and approval output; never let a build start without the user having seen
+it.
+
 If a `build-product.ps1` exists in the project root, it is a legacy runner
 from a previous package version — ignore it, never invoke or update it, and
 suggest deleting it.

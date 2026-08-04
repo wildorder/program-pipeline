@@ -47,6 +47,25 @@ tsconfig.json, pyproject.toml, go.mod, Cargo.toml).
   about gaps or corrections. Do not re-ask for what the repository already
   declares.
 
+### Model roles
+
+Also ask which models fill the pipeline's three roles. Never leave this
+implicit — it is the most consequential configuration in the pipeline:
+
+1. **Builder** — the agent CLI command (and model) the build runner executes
+   for each workstream, for example `claude -p --model sonnet`. Written to
+   the `agent` block of `pipeline.config.json`.
+2. **Author** — the model that writes workstream specs in
+   `author-workstreams`. Written to `models.author`.
+3. **Validator** — the model that independently validates specs. Written to
+   `models.validator`. Recommend a different model or provider than the
+   author to reduce correlated errors; if the user picks the same one, note
+   the tradeoff and respect the choice.
+
+If the user has no preference, record the host's current model for author,
+recommend a distinct validator, and leave the builder for the
+`build-program` workflow to configure — but say so explicitly in the report.
+
 Ask the Step 2 and Step 3 questions together in one message when possible.
 
 ## Step 4 — Run the deterministic initializer
@@ -70,6 +89,15 @@ is the canonical write path. It:
 The universal directives come from the packaged template by default; a user
 override is honored from `~/.program-pipeline/universal-directives.md`, or
 pass `--directives <path>` when the user names a directives file.
+
+After the initializer runs, write the model-role decisions from Step 3 into
+`pipeline.config.json`: the builder into `agent`, and the author and
+validator into `models`, for example:
+
+```json
+"agent": { "command": "claude", "args": ["-p", "--model", "sonnet"] },
+"models": { "author": "claude-code/opus", "validator": "gpt-sol" }
+```
 
 ## Step 5 — Confirm workflow skills are present
 

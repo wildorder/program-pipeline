@@ -24,7 +24,10 @@ Parse these optional flags from the invocation arguments:
 - `--validator-model <model>` — use the requested validator model when the host supports model selection.
 - `--report-json` — include a machine-readable JSON block with findings.
 
-If the requested validator model is unavailable, stop and ask the user to choose a supported model.
+When no `--validator-model` flag is given, default to `models.validator` from
+`pipeline.config.json`. State which model is validating and where that choice
+came from. If the requested validator model is unavailable, stop and ask the
+user to choose a supported model.
 
 ## Step 1 — Identify the program
 

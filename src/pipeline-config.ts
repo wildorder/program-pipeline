@@ -21,6 +21,7 @@ export const pipelineConfigSchema = z.object({
   visionPath: z.string().min(1),
   requireApprovalBeforeBuild: z.boolean(),
   agent: agentSchema.optional(),
+  models: z.record(z.string(), z.string().min(1)).default({}),
   verify: z.record(z.string(), z.string().min(1)).default({}),
   contextDocs: z.array(z.string().min(1)).default([]),
   build: z

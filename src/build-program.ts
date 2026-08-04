@@ -65,6 +65,8 @@ export interface BuildProgramResult {
   programId: string;
   result: BuildOutcome;
   reason?: string;
+  /** The resolved agent invocation (command and args), when configured. */
+  agent?: string;
   plan: PlanEntry[];
   outcomes: WorkstreamOutcome[];
   eventsPath?: string;
@@ -352,10 +354,17 @@ export async function buildProgram(
   const { plan, error: planError } = buildPlan(ordered, options.startFrom);
   if (planError) return aborted(planError);
 
+  const agent = resolveAgent(config);
+  const agentLabel = agent
+    ? [agent.command, ...agent.args].join(" ")
+    : undefined;
+  const agentField = agentLabel === undefined ? {} : { agent: agentLabel };
+
   if (options.dryRun) {
     return {
       programId: options.programId,
       result: "PLANNED",
+      ...agentField,
       plan,
       outcomes: [],
     };
@@ -367,6 +376,7 @@ export async function buildProgram(
       result: "APPROVAL_REQUIRED",
       reason:
         "pipeline.config.json sets requireApprovalBeforeBuild; re-run with --yes to execute this plan.",
+      ...agentField,
       plan,
       outcomes: [],
     };
@@ -380,7 +390,6 @@ export async function buildProgram(
     );
   }
 
-  const agent = resolveAgent(config);
   if (!agent) {
     return aborted(
       'No agent configured; add an "agent" block to pipeline.config.json or set PROGRAM_PIPELINE_AGENT_COMMAND.',
@@ -465,6 +474,7 @@ export async function buildProgram(
             programId: options.programId,
             result: "FAILED",
             reason: `Agent command failed to start for ${workstream.id}: ${message}`,
+            ...agentField,
             plan,
             outcomes,
             eventsPath,
@@ -548,6 +558,7 @@ export async function buildProgram(
         programId: options.programId,
         result: "FAILED",
         reason: `Workstream ${workstream.id} failed after ${attempts} attempt(s); see ${workstreamLog}.`,
+        ...agentField,
         plan,
         outcomes,
         eventsPath,
@@ -562,6 +573,7 @@ export async function buildProgram(
   return {
     programId: options.programId,
     result: "COMPLETE",
+    ...agentField,
     plan,
     outcomes,
     eventsPath,

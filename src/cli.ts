@@ -148,6 +148,7 @@ program
         approve: options.yes,
       });
 
+      if (report.agent) console.log(`agent ${report.agent}`);
       for (const entry of report.plan) {
         const suffix =
           entry.action === "skip" ? ` (skip: ${entry.reason ?? "skipped"})` : "";

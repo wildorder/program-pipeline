@@ -5,7 +5,7 @@ validating, building, and documenting engineering programs.
 
 ## Get started
 
-```powershell
+```sh
 # 1. Add the package to your project
 npm install --save-dev @wildorder/program-pipeline
 
@@ -29,13 +29,13 @@ Published on the public npm registry as
 [`@wildorder/program-pipeline`](https://www.npmjs.com/package/@wildorder/program-pipeline) —
 no tokens, private registry configuration, or repository credentials required:
 
-```powershell
+```sh
 npm install --save-dev @wildorder/program-pipeline
 ```
 
 Run the local executable with `npx`:
 
-```powershell
+```sh
 npx program-pipeline --help
 ```
 
@@ -46,7 +46,7 @@ npx program-pipeline --help
 Create the standard program-pipeline structure in a new project, or adopt an
 existing one. Existing files are never overwritten.
 
-```powershell
+```sh
 npm exec program-pipeline -- init --cwd .
 npm exec program-pipeline -- init --cwd . --name "Acme Dashboard" --stack "TypeScript/Node" --description "Operations dashboards for growing teams."
 ```
@@ -72,7 +72,7 @@ packaged with this package.
 Install all packaged workflow skills for one or more supported agents. The
 default target set is `cursor,claude,openclaw`.
 
-```powershell
+```sh
 npm exec program-pipeline -- install --cwd .
 npm exec program-pipeline -- install --cwd . --targets "cursor,claude"
 ```
@@ -100,7 +100,7 @@ from `pipeline.config.json`, writes workstream status back to the manifest
 marked `complete`, and appends structured JSON events to
 `build-logs/{program-id}-build-{timestamp}.jsonl`.
 
-```powershell
+```sh
 npm exec program-pipeline -- build phase-1 --cwd . --dry-run
 npm exec program-pipeline -- build phase-1 --cwd . --yes
 npm exec program-pipeline -- build phase-1 --cwd . --yes --start-from WS-03
@@ -133,7 +133,7 @@ required (blocked by `requireApprovalBeforeBuild` without `--yes`).
 
 Run deterministic validation for a program's manifest and workstream specs.
 
-```powershell
+```sh
 npm exec program-pipeline -- validate phase-1 --cwd .
 npm exec program-pipeline -- validate phase-1 --cwd . --strict
 npm exec program-pipeline -- validate phase-1 --cwd . --json
@@ -144,7 +144,7 @@ npm exec program-pipeline -- validate phase-1 --cwd . --json
 Verify that the installed package contains every required skill, template, and
 schema.
 
-```powershell
+```sh
 npm exec program-pipeline -- doctor
 ```
 
@@ -171,7 +171,7 @@ Code, and OpenClaw; only their installation roots differ.
 
 Requires Node.js 20 or newer.
 
-```powershell
+```sh
 npm ci
 npm run build
 npm run typecheck

@@ -46,7 +46,7 @@ Read all of these files:
 
 Run the package validator first:
 
-```powershell
+```sh
 npm exec program-pipeline -- validate "{program-id}" --json
 ```
 

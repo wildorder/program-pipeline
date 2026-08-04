@@ -45,7 +45,7 @@ before editing `pipeline.config.json`.
 
 Run a dry run and present the output:
 
-```powershell
+```sh
 npm exec program-pipeline -- build "{program-id}" --dry-run
 ```
 
@@ -57,7 +57,7 @@ skipped workstreams.
 
 Ask the user to confirm the plan. After confirmation, run:
 
-```powershell
+```sh
 npm exec program-pipeline -- build "{program-id}" --yes
 ```
 

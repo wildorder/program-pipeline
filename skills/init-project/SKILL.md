@@ -51,7 +51,7 @@ Ask the Step 2 and Step 3 questions together in one message when possible.
 
 ## Step 4 — Run the deterministic initializer
 
-```powershell
+```sh
 npm exec program-pipeline -- init --cwd "{project-root}"
 ```
 
@@ -82,7 +82,7 @@ Only when no target is installed at all (for example, when initializing a
 different project root than the one this skill is running from), ask the
 user which targets they want and run:
 
-```powershell
+```sh
 npm exec program-pipeline -- install --cwd "{project-root}" --targets {chosen}
 ```
 

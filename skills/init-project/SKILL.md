@@ -50,14 +50,23 @@ The universal directives come from the packaged template by default; a user
 override is honored from `~/.program-pipeline/universal-directives.md`, or
 pass `--directives <path>` when the user names a directives file.
 
-## Step 4 — Install portable workflows
+## Step 4 — Confirm workflow skills are present
+
+Check whether the project already contains installed pipeline skills
+(`.cursor/skills/`, `.claude/skills/`, or `skills/`). If any target is
+present, the team has already chosen its targets — do not install more, and
+do not re-run the installer.
+
+Only when no target is installed at all (for example, when initializing a
+different project root than the one this skill is running from), ask the
+user which targets they want and run:
 
 ```powershell
-npm exec program-pipeline -- install --cwd "{project-root}" --targets cursor,claude,openclaw
+npm exec program-pipeline -- install --cwd "{project-root}" --targets {chosen}
 ```
 
-Narrow `--targets` to the agents the team actually uses. Do not use `--force`
-unless the user explicitly approves replacing a reported skill conflict.
+Never use `--force` unless the user explicitly approves replacing a reported
+skill conflict.
 
 ## Step 5 — Brownfield enrichment
 

@@ -9,8 +9,10 @@ validating, building, and documenting engineering programs.
 # 1. Add the package to your project
 npm install --save-dev @wildorder/program-pipeline
 
-# 2. Install the workflow skills for your agent (narrow --targets to what you use)
-npm exec program-pipeline -- install --cwd . --targets claude
+# 2. Install the workflow skills (defaults to all targets: cursor, claude, openclaw;
+#    narrow with --targets if you prefer). Commit the generated files so every
+#    dev gets the workflows on git pull without running install.
+npm exec program-pipeline -- install --cwd .
 
 # 3. In your agent, run the guided setup
 #    /init-project

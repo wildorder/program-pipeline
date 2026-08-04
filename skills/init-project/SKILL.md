@@ -60,14 +60,19 @@ implicit — it is the most consequential configuration in the pipeline:
 3. **Validator** — the model that independently validates specs. Written to
    `models.validator`. Recommend a different model or provider than the
    author to reduce correlated errors; if the user picks the same one, note
-   the tradeoff and respect the choice. When the validator is from a
-   different provider than the user's host can switch to (for example a
-   GPT validator while working in Claude Code), also ask for an external
-   agent command and write it to `validatorAgent`, for example
-   `{ "command": "codex", "args": ["exec", "--model", "gpt-sol"] }` — hosts
-   that can switch models in-host use `models.validator` directly, and hosts
-   that cannot run the external command instead (each bills through its own
-   account).
+   the tradeoff and respect the choice.
+
+**Always set `validatorAgent`.** Alongside `models.validator`, always
+propose and write the external agent command that runs the validator model —
+for example `{ "command": "codex", "args": ["exec", "--model", "gpt-sol"] }`
+for a GPT validator, or `{ "command": "claude", "args": ["-p", "--model",
+"opus"] }` for an Anthropic one. Do not skip it because the current host can
+switch models in-host: the config describes the team's pipeline, and other
+hosts (or teammates) without in-host switching depend on the fallback. Hosts
+that can switch in-host ignore it; hosts that cannot use it (each mechanism
+bills through its own account). Check whether the external CLI is available
+on this machine and warn if it is not installed or authenticated — but still
+write the configuration.
 
 If the user has no preference, record the host's current model for author,
 recommend a distinct validator, and leave the builder for the
@@ -103,6 +108,7 @@ validator into `models`, for example:
 
 ```json
 "agent": { "command": "claude", "args": ["-p", "--model", "sonnet"] },
+"validatorAgent": { "command": "codex", "args": ["exec", "--model", "gpt-sol"] },
 "models": { "author": "claude-code/opus", "validator": "gpt-sol" }
 ```
 

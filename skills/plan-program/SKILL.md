@@ -82,9 +82,11 @@ Inspect `docs/programs/` for an existing `*-program.md`. Match its structure whe
 [Stable IDs, `SC-01`, `SC-02`, and so on, paired with numbered, verifiable outcomes.]
 ```
 
-Present the draft for approval before generating or saving the final manifest.
+Write the draft directly to `docs/programs/{program-id}-program.md`. Do not
+paste the document into the conversation or ask for approval before saving —
+the file is the review surface, not the chat window.
 
-## 4. Generate the manifest after approval
+## 4. Generate the manifest
 
 If `docs/programs/` contains an existing `*-manifest.json`, match its schema exactly. Otherwise use:
 
@@ -123,12 +125,14 @@ If `docs/programs/` contains an existing `*-manifest.json`, match its schema exa
 }
 ```
 
-## 5. Save
+Save it directly to `docs/programs/{program-id}-manifest.json`.
 
-After approval, save:
+## 5. Hand off for review
 
-- `docs/programs/{program-id}-program.md`
-- `docs/programs/{program-id}-manifest.json`
+Both files now exist on disk. Reply with a short summary only — program
+scope in a sentence, workstream count, critical path, and links to the two
+file paths — and invite the user to review the files and request changes.
+Apply any requested edits to the files in place.
 
 Do not create workstream specs in this workflow. That belongs to `author-workstreams`.
 

@@ -142,7 +142,10 @@ Skip this step for greenfield projects.
 2. **Author the vision.** The CLI scaffolded `docs/vision.md` as a template.
    Draft its real content from the as-built snapshot plus a short interview:
    what the product is for, target users, where it is heading, and what is
-   explicitly out of scope. Present the draft for approval before saving.
+   explicitly out of scope. Write the draft directly to `docs/vision.md` —
+   the file is the review surface; do not paste the content into the
+   conversation for approval. Summarize briefly and invite edits, applying
+   them to the file in place.
 3. **Complete `AGENTS.md`.** Fill the project Conventions section from
    observed practice — lint and formatter configs, test layout, naming
    patterns — and confirm the generated dependency table reflects the

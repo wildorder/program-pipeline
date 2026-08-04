@@ -1,9 +1,27 @@
 import { access, readFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Ajv2020, type ErrorObject } from "ajv/dist/2020.js";
+import { findCycles } from "./graph.js";
 import { PACKAGE_ROOT } from "./package-assets.js";
 
 export type Severity = "blocker" | "major" | "minor";
+
+/**
+ * The deterministic workstream-spec contract. The authoring and validation
+ * skills describe this format in prose; this validator owns it. Keep the two
+ * aligned by treating these values as canonical.
+ */
+export const SPEC_CONTRACT = {
+  sections: {
+    traceability: "Traceability",
+    filesTouched: "Files Touched",
+    tests: "Tests",
+    acceptanceCriteria: "Acceptance Criteria",
+  },
+  successCriterionIdPattern: "SC-\\d{2,}",
+  workstreamIdPattern: "WS-\\d{2,}",
+  fileAnnotationPattern: "\\((?:NEW|MODIFY)\\)",
+} as const;
 
 export interface Finding {
   severity: Severity;
@@ -72,37 +90,6 @@ function containsUnsafePath(root: string, candidate: string): boolean {
   const resolved = resolve(root, candidate);
   const fromRoot = relative(root, resolved);
   return fromRoot.startsWith("..") || isAbsolute(fromRoot);
-}
-
-function findCycles(manifest: Manifest): string[][] {
-  const graph = new Map(
-    manifest.workstreams.map((workstream) => [
-      workstream.id,
-      workstream.dependencies,
-    ]),
-  );
-  const visiting = new Set<string>();
-  const visited = new Set<string>();
-  const cycles: string[][] = [];
-
-  function visit(id: string, path: string[]): void {
-    if (visiting.has(id)) {
-      const start = path.indexOf(id);
-      cycles.push([...path.slice(start), id]);
-      return;
-    }
-    if (visited.has(id)) return;
-
-    visiting.add(id);
-    for (const dependency of graph.get(id) ?? []) {
-      if (graph.has(dependency)) visit(dependency, [...path, id]);
-    }
-    visiting.delete(id);
-    visited.add(id);
-  }
-
-  for (const id of graph.keys()) visit(id, []);
-  return cycles;
 }
 
 async function readManifest(
@@ -255,7 +242,10 @@ export async function validateWorkstreams(
     }
 
     const markdown = await readFile(taskPath, "utf8");
-    const traceability = ids(section(markdown, "Traceability"), "SC");
+    const traceability = ids(
+      section(markdown, SPEC_CONTRACT.sections.traceability),
+      "SC",
+    );
     if (traceability.length === 0) {
       findings.push({
         severity: "blocker",
@@ -279,14 +269,15 @@ export async function validateWorkstreams(
       }
     }
 
-    const filesTouched = section(markdown, "Files Touched");
+    const filesTouched = section(markdown, SPEC_CONTRACT.sections.filesTouched);
     const fileLines =
       filesTouched?.split(/\r?\n/u).filter((line) => /[`/\\][^`]*`/u.test(line)) ??
       [];
+    const annotation = new RegExp(SPEC_CONTRACT.fileAnnotationPattern, "u");
     if (
       !filesTouched ||
       fileLines.length === 0 ||
-      fileLines.some((line) => !/\((?:NEW|MODIFY)\)/u.test(line))
+      fileLines.some((line) => !annotation.test(line))
     ) {
       findings.push({
         severity: "blocker",
@@ -297,7 +288,10 @@ export async function validateWorkstreams(
       });
     }
 
-    for (const requiredSection of ["Tests", "Acceptance Criteria"]) {
+    for (const requiredSection of [
+      SPEC_CONTRACT.sections.tests,
+      SPEC_CONTRACT.sections.acceptanceCriteria,
+    ]) {
       if (!section(markdown, requiredSection)) {
         findings.push({
           severity: "major",
@@ -310,7 +304,7 @@ export async function validateWorkstreams(
     }
   }
 
-  for (const cycle of findCycles(manifest)) {
+  for (const cycle of findCycles(manifest.workstreams)) {
     findings.push({
       severity: "blocker",
       code: "dependency-cycle",

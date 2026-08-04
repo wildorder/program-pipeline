@@ -9,6 +9,8 @@ export const initOptionsSchema = z.object({
   name: z.string().min(1),
   stack: z.string().min(1),
   description: z.string().min(1),
+  home: z.string().min(1).optional(),
+  directivesPath: z.string().min(1).optional(),
 });
 
 export type InitOptions = z.infer<typeof initOptionsSchema>;
@@ -55,32 +57,71 @@ async function writeIfMissing(
   result.created.push(relativePath);
 }
 
-async function loadUniversalDirectives(result: InitResult): Promise<string> {
-  const source = join(homedir(), ".cursor", "templates", "claude-base.md");
-  if (await exists(source)) {
-    return readFile(source, "utf8");
+interface UniversalDirectives {
+  content: string;
+  source: string;
+}
+
+async function loadUniversalDirectives(
+  home: string,
+  explicitPath: string | undefined,
+): Promise<UniversalDirectives> {
+  if (explicitPath) {
+    const path = resolve(explicitPath);
+    if (!(await exists(path))) {
+      throw new Error(`Universal directives override not found: ${path}`);
+    }
+    return { content: await readFile(path, "utf8"), source: path };
   }
 
-  result.warnings.push(
-    `Universal directives not found at ${source}; wrote a minimal placeholder.`,
-  );
-  return "# Agent Directives\n\nRun your organization's setup command to configure universal directives.\n";
+  const override = join(home, ".program-pipeline", "universal-directives.md");
+  if (await exists(override)) {
+    return { content: await readFile(override, "utf8"), source: override };
+  }
+
+  return {
+    content: await loadTemplate("universal-directives.md"),
+    source: "@wildorder/program-pipeline packaged default",
+  };
 }
 
 async function loadTemplate(name: string): Promise<string> {
   return readFile(join(PACKAGE_ROOT, "templates", name), "utf8");
 }
 
+async function detectVerifyCommands(
+  root: string,
+): Promise<Record<string, string>> {
+  let scripts: Record<string, string>;
+  try {
+    const raw = JSON.parse(
+      await readFile(join(root, "package.json"), "utf8"),
+    ) as { scripts?: Record<string, string> };
+    scripts = raw.scripts ?? {};
+  } catch {
+    return {};
+  }
+
+  const verify: Record<string, string> = {};
+  if (scripts.build) verify.build = "npm run build";
+  if (scripts.typecheck) verify.typecheck = "npm run typecheck";
+  if (scripts.lint) verify.lint = "npm run lint";
+  if (scripts.test) verify.test = "npm test";
+  return verify;
+}
+
 export async function initProject(input: InitOptions): Promise<InitResult> {
   const options = initOptionsSchema.parse(input);
   const root = resolve(options.cwd);
+  const home = resolve(options.home ?? homedir());
   const result: InitResult = { created: [], skipped: [], warnings: [] };
-  const universal = await loadUniversalDirectives(result);
+  const universal = await loadUniversalDirectives(home, options.directivesPath);
   const values = {
     PROJECT_NAME: options.name,
     STACK: options.stack,
     DESCRIPTION: options.description,
-    UNIVERSAL_DIRECTIVES: universal.trim(),
+    UNIVERSAL_DIRECTIVES: universal.content.trim(),
+    UNIVERSAL_SOURCE: universal.source,
   };
 
   await mkdir(root, { recursive: true });
@@ -95,7 +136,6 @@ export async function initProject(input: InitOptions): Promise<InitResult> {
     ["docs/vision.md", "vision.md"],
     ["AGENTS.md", "AGENTS.md"],
     ["CLAUDE.md", "CLAUDE.md"],
-    ["build-product.ps1", "build-product.ps1"],
   ] as const) {
     const template = await loadTemplate(templateName);
     await writeIfMissing(
@@ -112,6 +152,7 @@ export async function initProject(input: InitOptions): Promise<InitResult> {
       pipelineVersion: await packageVersion(),
       visionPath: "docs/vision.md",
       requireApprovalBeforeBuild: true,
+      verify: await detectVerifyCommands(root),
     },
     null,
     2,

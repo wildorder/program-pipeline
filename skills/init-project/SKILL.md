@@ -34,8 +34,14 @@ npx --yes @wildorder/program-pipeline init --cwd "{project-root}" --name "{proje
 
 Do not manually reproduce the templates. The CLI is the canonical write path
 and will create the standard directories, `docs/vision.md`, `AGENTS.md`,
-`CLAUDE.md`, `pipeline.config.json`, `build-product.ps1`, and the
-`build-logs/` ignore entry without overwriting existing files.
+`CLAUDE.md`, `pipeline.config.json`, and the `build-logs/` ignore entry
+without overwriting existing files. When a `package.json` with scripts
+exists, the initializer prefills the config's `verify` commands from it.
+
+The universal directives embedded in `AGENTS.md` come from the packaged
+template by default. A user or organization override is honored automatically
+from `~/.program-pipeline/universal-directives.md`, or pass
+`--directives <path>` explicitly when the user names a directives file.
 
 ## Step 3 — Install portable workflows
 

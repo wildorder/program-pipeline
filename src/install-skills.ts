@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { PACKAGE_ROOT } from "./package-assets.js";
 
@@ -20,6 +21,16 @@ export interface InstallSkillsOptions {
   cwd: string;
   targets: SkillTarget[];
   force?: boolean;
+  home?: string;
+}
+
+export interface DefinitionWarning {
+  workflow: Workflow;
+  kind: "command" | "skill";
+  scope: "project" | "user";
+  target: SkillTarget;
+  path: string;
+  packageManaged: boolean;
 }
 
 export interface InstallSkillsResult {
@@ -27,6 +38,8 @@ export interface InstallSkillsResult {
   updated: string[];
   skipped: string[];
   conflicts: string[];
+  warnings: DefinitionWarning[];
+  aborted: boolean;
 }
 
 const MARKER_PATTERN = /<!-- program-pipeline:sha256=([a-f0-9]{64}) -->\n?/u;
@@ -35,6 +48,21 @@ const TARGET_ROOTS: Record<SkillTarget, string> = {
   claude: join(".claude", "skills"),
   openclaw: "skills",
 };
+const COMMAND_EXTENSIONS = [".md", ".mdc", ".markdown", ".txt"] as const;
+
+interface DefinitionRoot {
+  target: SkillTarget;
+  kind: "command" | "skill";
+  scope: "project" | "user";
+  root: string;
+}
+
+interface PlannedWrite {
+  relativePath: string;
+  destination: string;
+  desired: string;
+  action: "install" | "update" | "skip" | "conflict";
+}
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -88,16 +116,104 @@ export function parseTargets(value: string): SkillTarget[] {
   return [...new Set(values)] as SkillTarget[];
 }
 
+function definitionRoots(
+  projectRoot: string,
+  userHome: string,
+  targets: SkillTarget[],
+): DefinitionRoot[] {
+  const roots: DefinitionRoot[] = [];
+  if (targets.includes("cursor")) {
+    roots.push(
+      { target: "cursor", kind: "command", scope: "project", root: join(projectRoot, ".cursor", "commands") },
+      { target: "cursor", kind: "command", scope: "user", root: join(userHome, ".cursor", "commands") },
+      { target: "cursor", kind: "skill", scope: "project", root: join(projectRoot, ".cursor", "skills") },
+      { target: "cursor", kind: "skill", scope: "project", root: join(projectRoot, ".agents", "skills") },
+      { target: "cursor", kind: "skill", scope: "project", root: join(projectRoot, ".claude", "skills") },
+      { target: "cursor", kind: "skill", scope: "user", root: join(userHome, ".cursor", "skills") },
+      { target: "cursor", kind: "skill", scope: "user", root: join(userHome, ".agents", "skills") },
+      { target: "cursor", kind: "skill", scope: "user", root: join(userHome, ".claude", "skills") },
+    );
+  }
+  if (targets.includes("claude")) {
+    roots.push(
+      { target: "claude", kind: "command", scope: "project", root: join(projectRoot, ".claude", "commands") },
+      { target: "claude", kind: "command", scope: "user", root: join(userHome, ".claude", "commands") },
+      { target: "claude", kind: "skill", scope: "project", root: join(projectRoot, ".claude", "skills") },
+      { target: "claude", kind: "skill", scope: "user", root: join(userHome, ".claude", "skills") },
+    );
+  }
+  if (targets.includes("openclaw")) {
+    roots.push(
+      { target: "openclaw", kind: "skill", scope: "project", root: join(projectRoot, "skills") },
+      { target: "openclaw", kind: "skill", scope: "user", root: join(userHome, ".openclaw", "skills") },
+      { target: "openclaw", kind: "skill", scope: "user", root: join(userHome, ".openclaw", "workspace", "skills") },
+    );
+  }
+  return roots;
+}
+
+function pathKey(path: string): string {
+  return process.platform === "win32" ? path.toLowerCase() : path;
+}
+
+async function findDefinitionWarnings(
+  projectRoot: string,
+  userHome: string,
+  targets: SkillTarget[],
+  destinations: Set<string>,
+): Promise<DefinitionWarning[]> {
+  const warnings: DefinitionWarning[] = [];
+  const seen = new Set<string>();
+
+  for (const location of definitionRoots(projectRoot, userHome, targets)) {
+    for (const workflow of WORKFLOWS) {
+      const candidates =
+        location.kind === "skill"
+          ? [join(location.root, workflow, "SKILL.md")]
+          : COMMAND_EXTENSIONS.map((extension) =>
+              join(location.root, `${workflow}${extension}`),
+            );
+
+      for (const candidate of candidates) {
+        const key = pathKey(candidate);
+        if (destinations.has(key) || seen.has(key) || !(await exists(candidate))) {
+          continue;
+        }
+        seen.add(key);
+        const content = await readFile(candidate, "utf8");
+        warnings.push({
+          workflow,
+          kind: location.kind,
+          scope: location.scope,
+          target: location.target,
+          path:
+            location.scope === "project"
+              ? join(".", candidate.slice(projectRoot.length + 1))
+              : candidate,
+          packageManaged:
+            location.kind === "skill" && generatedFileIsUnmodified(content),
+        });
+      }
+    }
+  }
+
+  return warnings;
+}
+
 export async function installSkills(
   input: InstallSkillsOptions,
 ): Promise<InstallSkillsResult> {
   const root = resolve(input.cwd);
+  const userHome = resolve(input.home ?? homedir());
   const result: InstallSkillsResult = {
     installed: [],
     updated: [],
     skipped: [],
     conflicts: [],
+    warnings: [],
+    aborted: false,
   };
+  const plans: PlannedWrite[] = [];
 
   for (const target of input.targets) {
     for (const workflow of WORKFLOWS) {
@@ -114,21 +230,48 @@ export async function installSkills(
       const desired = withMarker(source);
 
       if (!(await exists(destination))) {
-        await mkdir(dirname(destination), { recursive: true });
-        await writeFile(destination, desired, "utf8");
-        result.installed.push(relativePath);
+        plans.push({ relativePath, destination, desired, action: "install" });
         continue;
       }
 
       const current = await readFile(destination, "utf8");
       if (normalize(current) === desired) {
-        result.skipped.push(relativePath);
+        plans.push({ relativePath, destination, desired, action: "skip" });
       } else if (input.force || generatedFileIsUnmodified(current)) {
-        await writeFile(destination, desired, "utf8");
-        result.updated.push(relativePath);
+        plans.push({ relativePath, destination, desired, action: "update" });
       } else {
-        result.conflicts.push(relativePath);
+        plans.push({ relativePath, destination, desired, action: "conflict" });
       }
+    }
+  }
+
+  const destinations = new Set(plans.map(({ destination }) => pathKey(destination)));
+  result.warnings = await findDefinitionWarnings(
+    root,
+    userHome,
+    input.targets,
+    destinations,
+  );
+  result.conflicts = plans
+    .filter(({ action }) => action === "conflict")
+    .map(({ relativePath }) => relativePath);
+  result.skipped = plans
+    .filter(({ action }) => action === "skip")
+    .map(({ relativePath }) => relativePath);
+
+  if (result.conflicts.length > 0) {
+    result.aborted = true;
+    return result;
+  }
+
+  for (const plan of plans) {
+    if (plan.action === "install") {
+      await mkdir(dirname(plan.destination), { recursive: true });
+      await writeFile(plan.destination, plan.desired, "utf8");
+      result.installed.push(plan.relativePath);
+    } else if (plan.action === "update") {
+      await writeFile(plan.destination, plan.desired, "utf8");
+      result.updated.push(plan.relativePath);
     }
   }
 
@@ -145,7 +288,7 @@ export async function doctor(): Promise<string[]> {
     "vision.md",
     "AGENTS.md",
     "CLAUDE.md",
-    "build-product.ps1",
+    "universal-directives.md",
   ]) {
     if (!(await exists(join(PACKAGE_ROOT, "templates", template)))) {
       problems.push(`Missing packaged template: ${template}`);

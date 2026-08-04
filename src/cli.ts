@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from "commander";
+import { buildProgram } from "./build-program.js";
 import { initProject } from "./init-project.js";
 import {
   doctor,
@@ -23,14 +24,27 @@ program
   .requiredOption("--stack <stack>", "Primary language and technology stack")
   .requiredOption("--description <description>", "One-line product description")
   .option("--cwd <path>", "Project directory", process.cwd())
+  .option(
+    "--directives <path>",
+    "Universal directives override file (defaults to ~/.program-pipeline/universal-directives.md, then the packaged template)",
+  )
   .action(
     async (options: {
       name: string;
       stack: string;
       description: string;
       cwd: string;
+      directives?: string;
     }) => {
-      const result = await initProject(options);
+      const result = await initProject({
+        cwd: options.cwd,
+        name: options.name,
+        stack: options.stack,
+        description: options.description,
+        ...(options.directives === undefined
+          ? {}
+          : { directivesPath: options.directives }),
+      });
       for (const path of result.created) console.log(`created ${path}`);
       for (const path of result.skipped) console.log(`skipped ${path}`);
       for (const warning of result.warnings) console.warn(`warning ${warning}`);
@@ -62,7 +76,20 @@ program
       for (const path of result.installed) console.log(`installed ${path}`);
       for (const path of result.updated) console.log(`updated ${path}`);
       for (const path of result.skipped) console.log(`unchanged ${path}`);
+      for (const warning of result.warnings) {
+        const ownership = warning.packageManaged
+          ? "package-managed"
+          : "external";
+        console.warn(
+          `warning ${warning.scope} ${warning.target} ${warning.kind} (${ownership}) for ${warning.workflow}: ${warning.path}`,
+        );
+      }
       for (const path of result.conflicts) console.warn(`conflict ${path}`);
+      if (result.aborted) {
+        console.warn(
+          "installation aborted before writing files; resolve conflicts or re-run with --force",
+        );
+      }
       if (result.conflicts.length > 0) process.exitCode = 1;
     },
   );
@@ -79,6 +106,57 @@ program
     for (const problem of problems) console.error(problem);
     process.exitCode = 1;
   });
+
+program
+  .command("build")
+  .description(
+    "Execute a program's workstreams with the configured agent and verification gates",
+  )
+  .argument("<program-id>", "Program ID")
+  .option("--cwd <path>", "Project directory", process.cwd())
+  .option("--start-from <workstream-id>", "Resume from a workstream ID or prefix")
+  .option("--dry-run", "Print the execution plan without running anything", false)
+  .option("--yes", "Approve execution when the config requires approval", false)
+  .action(
+    async (
+      programId: string,
+      options: {
+        cwd: string;
+        startFrom?: string;
+        dryRun: boolean;
+        yes: boolean;
+      },
+    ) => {
+      const report = await buildProgram({
+        cwd: options.cwd,
+        programId,
+        ...(options.startFrom === undefined
+          ? {}
+          : { startFrom: options.startFrom }),
+        dryRun: options.dryRun,
+        approve: options.yes,
+      });
+
+      for (const entry of report.plan) {
+        const suffix =
+          entry.action === "skip" ? ` (skip: ${entry.reason ?? "skipped"})` : "";
+        console.log(`plan ${entry.id} ${entry.name}${suffix}`);
+      }
+      for (const outcome of report.outcomes) {
+        console.log(
+          `${outcome.status} ${outcome.id} after ${outcome.attempts} attempt(s)`,
+        );
+      }
+      if (report.eventsPath) console.log(`events ${report.eventsPath}`);
+      console.log(`${report.result}: ${report.programId}`);
+      if (report.reason) console.log(report.reason);
+      if (report.result === "FAILED" || report.result === "ABORTED") {
+        process.exitCode = 1;
+      } else if (report.result === "APPROVAL_REQUIRED") {
+        process.exitCode = 2;
+      }
+    },
+  );
 
 program
   .command("validate")

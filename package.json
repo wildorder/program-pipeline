@@ -14,7 +14,8 @@
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --exclude \"**/e2e.test.ts\"",
+    "test:e2e": "vitest run test/e2e.test.ts",
     "lint": "eslint .",
     "prepack": "npm run build"
   },
@@ -42,7 +43,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wingitlabs/program-pipeline.git"
+    "url": "git+https://github.com/wildorder/program-pipeline.git"
   },
   "publishConfig": {
     "access": "public",

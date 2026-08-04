@@ -19,7 +19,7 @@ Use the positional program ID when supplied. Otherwise ask for it and wait.
 
 Read:
 
-- `docs/vision.md`, or `visionPath` from `pipeline.config.json`; consult legacy repository overrides only when needed.
+- The vision document at `visionPath` from `pipeline.config.json`; use `docs/vision.md` only when no configuration exists.
 - `docs/programs/{program-id}-program.md`.
 - `docs/programs/{program-id}-manifest.json`.
 - Every workstream spec under `tasks/{program-id}/`.

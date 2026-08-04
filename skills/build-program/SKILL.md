@@ -1,72 +1,89 @@
 ---
 name: build-program
-description: Execute a program's dependency-ordered workstreams through the project's automated build pipeline with validation, confirmation, monitoring, and verification gates. Use when a user asks to build, execute, or resume a planned program.
+description: Execute a program's dependency-ordered workstreams through the packaged build runner with validation, confirmation, independent verification, and status tracking. Use when a user asks to build, execute, or resume a planned program.
 argument-hint: "[program-id]"
 disable-model-invocation: true
 ---
 
 # Build Program
 
-Execute a program's workstreams through the automated build pipeline.
+Execute a program's workstreams through the packaged build runner.
 
 ## Step 1 — Identify the program
 
 Use the supplied program ID. If none was provided, ask which program to build and wait for the answer.
 
-## Step 2 — Run the preflight validation gate
+## Step 2 — Check the pipeline configuration
 
-Before presenting the execution order, invoke the `validate-workstreams` skill for the same program ID or execute its checks inline.
+Read `pipeline.config.json` in the project root. The runner requires:
 
-Use a strong code-validation model when the host supports model selection. If no model-selection capability exists, use the current model and preserve the same validation checks and severity rules.
+- **`agent`** — the agent CLI that implements each workstream, for example:
 
-- If validation returns `FAILED` with blockers, stop and ask whether to run focused fixes first.
-- If validation passes, or only minor findings remain, continue.
+  ```json
+  "agent": { "command": "claude", "args": ["-p"], "promptMode": "stdin" }
+  ```
+
+  The runner delivers each workstream prompt on stdin by default; set
+  `"promptMode": "argument"` for agents that expect the prompt as the final
+  positional argument. The `PROGRAM_PIPELINE_AGENT_COMMAND` environment
+  variable works as a fallback when no `agent` block exists.
+
+- **`verify`** — the commands the runner executes itself after every
+  workstream, for example:
+
+  ```json
+  "verify": { "build": "npm run build", "test": "npm test" }
+  ```
+
+  Verification is independent: a workstream passes only when every verify
+  command exits successfully, regardless of what the agent reports.
+
+If either block is missing, show the user what to add and wait for approval
+before editing `pipeline.config.json`.
 
 ## Step 3 — Show the execution plan
 
-Read `docs/programs/{program-id}-manifest.json` to obtain the workstream list.
-
-Display:
-
-- Total workstream count.
-- Dependency-respecting execution order.
-- Estimated effort per workstream: S, M, or L.
-- Workstreams already marked complete when resuming.
-
-## Step 4 — Check for the build script
-
-Check whether `build-product.ps1` exists in the project root.
-
-If it exists:
-
-- Determine whether it supports a `-Program` parameter.
-- If it does, confirm maximum turns, budget per workstream, and model settings with the user. Default to a balanced build-capable model and escalate to a higher-capability model only when needed.
-- If it does not, explain that the script must be parameterized to read the manifest, or offer to run it with manual workstream overrides.
-
-If it does not exist:
-
-- Tell the user that the automated workflow requires a build script.
-- Offer to create one from the standard pipeline pattern: sequential workstream execution, verification gates, and version-control checkpoints.
-
-## Step 5 — Execute
-
-After the user confirms, run:
+Run a dry run and present the output:
 
 ```powershell
-.\build-product.ps1 -Program {program-id}
+npm exec program-pipeline -- build "{program-id}" --dry-run
 ```
 
-To resume from a specific workstream, run:
+The plan lists workstreams in dependency order and marks the ones already
+skipped as `complete`. Summarize total count, execution order, and any
+skipped workstreams.
+
+## Step 4 — Confirm and execute
+
+Ask the user to confirm the plan. After confirmation, run:
 
 ```powershell
-.\build-product.ps1 -Program {program-id} -StartFrom {ws-id}
+npm exec program-pipeline -- build "{program-id}" --yes
 ```
 
-## Step 6 — Monitor and report
+To resume from a specific workstream regardless of status, add
+`--start-from {ws-id}`. Otherwise the runner automatically skips workstreams
+whose manifest status is already `complete`.
 
-Monitor execution and report:
+The runner performs, per workstream:
 
-- Which workstreams passed or failed verification gates.
-- Total elapsed time.
-- Any workstreams that required automatic fix attempts.
-- Whether any failure requires manual intervention.
+1. Mark the workstream `in_progress` in the manifest.
+2. Invoke the configured agent with the workstream prompt.
+3. Run every `verify` command itself; any failure triggers one focused
+   recovery attempt (configurable via `build.maxRecoveryAttempts`).
+4. Mark the workstream `complete` or `failed` and append structured JSON
+   events to `build-logs/{program-id}-build-{timestamp}.jsonl`.
+
+A failed workstream stops the build with a nonzero exit code.
+
+## Step 5 — Report
+
+Report from the runner output and the events log:
+
+- Which workstreams completed, with attempt counts.
+- Which workstream failed, the failing verify command, and the log path
+  (`build-logs/{program-id}-{ws-id}.log`).
+- Whether the build is resumable (`--start-from` or re-run to skip completed
+  workstreams).
+- Next step after a full pass: run the program review or update the as-built
+  snapshot.

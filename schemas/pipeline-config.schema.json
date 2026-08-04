@@ -24,6 +24,31 @@
     },
     "requireApprovalBeforeBuild": {
       "type": "boolean"
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "promptMode": { "enum": ["stdin", "argument"] }
+      }
+    },
+    "verify": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxRecoveryAttempts": { "type": "integer", "minimum": 0 },
+        "logDir": { "type": "string", "minLength": 1 }
+      }
     }
   }
 }

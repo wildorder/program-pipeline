@@ -1,4 +1,30 @@
 export {
+  buildProgram,
+  defaultAgentRunner,
+  defaultVerifyRunner,
+  type AgentInvocation,
+  type AgentRunner,
+  type BuildOutcome,
+  type BuildProgramOptions,
+  type BuildProgramResult,
+  type CommandResult,
+  type PlanEntry,
+  type VerifyRunner,
+  type WorkstreamOutcome,
+} from "./build-program.js";
+export {
+  findCycles,
+  stableTopologicalOrder,
+  type GraphNode,
+} from "./graph.js";
+export {
+  loadPipelineConfig,
+  pipelineConfigSchema,
+  PIPELINE_CONFIG_FILE,
+  type AgentConfig,
+  type PipelineConfig,
+} from "./pipeline-config.js";
+export {
   initProject,
   initOptionsSchema,
   type InitOptions,
@@ -9,12 +35,14 @@ export {
   installSkills,
   parseTargets,
   WORKFLOWS,
+  type DefinitionWarning,
   type InstallSkillsOptions,
   type InstallSkillsResult,
   type SkillTarget,
   type Workflow,
 } from "./install-skills.js";
 export {
+  SPEC_CONTRACT,
   validateWorkstreams,
   type CoverageEntry,
   type Finding,

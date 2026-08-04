@@ -34,7 +34,7 @@ Use the supplied program ID. If none was provided, ask which program to validate
 
 Read all of these files:
 
-- `docs/vision.md`, or `visionPath` from `pipeline.config.json`; consult legacy repository overrides only when needed
+- The vision document at `visionPath` from `pipeline.config.json`; use `docs/vision.md` only when no configuration exists
 - `docs/programs/{program-id}-program.md`
 - `docs/programs/{program-id}-manifest.json`
 - Every file in `tasks/{program-id}/`
@@ -53,6 +53,10 @@ Add `--strict` when requested. Preserve its findings as the mechanical
 baseline. A nonzero exit is an expected gate result, not a tool failure. If
 the package command is unavailable, perform the same blocker checks directly
 and state that deterministic validation could not run.
+
+The package validator owns the spec contract: required section names,
+`SC-xx`/`WS-xx` ID formats, and `(NEW)`/`(MODIFY)` annotations. Never
+contradict its findings with a different interpretation of the format.
 
 ## Step 4 — Build a validation matrix
 

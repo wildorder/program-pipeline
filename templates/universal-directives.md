@@ -1,4 +1,3 @@
-<!-- BEGIN UNIVERSAL — source: templates/universal-directives.md -->
 # Agent Directives: Universal
 
 These directives apply to every agent working in this repository, regardless
@@ -49,33 +48,3 @@ of provider or harness.
 8. PARALLELIZE INDEPENDENT WORK: When the harness supports sub-agents and the
    task spans many independent files, split the work rather than degrading a
    single context; keep tightly coupled changes together.
-<!-- END UNIVERSAL -->
-
----
-
-## Project: Program Pipeline
-
-Program Pipeline is a provider-neutral TypeScript CLI and Agent Skills package
-for planning, reviewing, validating, executing, and snapshotting engineering
-programs.
-
-### Tech Stack
-
-- Node.js 20+
-- TypeScript ESM in strict mode
-- Commander for the CLI
-- Zod and JSON Schema validation
-- Vitest for tests
-
-### Conventions
-
-- Command and workflow IDs are lowercase kebab-case.
-- Deterministic behavior belongs in `src/`; model reasoning belongs in `skills/`.
-- Never overwrite user-authored files without explicit `--force`.
-- Keep all workflows provider-neutral and free of product-specific context.
-- Use dependency injection for filesystem boundaries that require unit tests.
-
-### Verification
-
-Run `npm run build`, `npm run typecheck`, `npm test`, and
-`npm run lint -- --quiet` before reporting completion.

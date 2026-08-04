@@ -31,18 +31,21 @@ Read:
 
 - `docs/programs/{program-id}-program.md`
 - `docs/programs/{program-id}-manifest.json`
-- `docs/vision.md`
+- The vision document at `visionPath` from `pipeline.config.json`; use
+  `docs/vision.md` only when no configuration exists.
 - `docs/as-built.md`, when present
 - `AGENTS.md`
-
-If `docs/vision.md` is absent, check `pipeline.config.json` for `visionPath`,
-then any legacy repository override configuration such as `.cursor/rules/`.
 
 ## 3. Author every spec
 
 Skip this step with `--validate-only`.
 
 Generate and save all specs. Do not stop for approval after each one. Parallelize independent workstreams when the host supports parallel agents. If ambiguity requires judgment, make the best supported assumption, continue, and record it for the final report.
+
+The section names, ID formats, and file annotations below are the contract
+enforced by `program-pipeline validate`; the validator is canonical, so do not
+rename its required sections (`Traceability`, `Files Touched`, `Tests`,
+`Acceptance Criteria`) or the `SC-xx`/`WS-xx`/`(NEW)`/`(MODIFY)` formats.
 
 Inspect `tasks/` for an existing workstream spec and match its structure. If none exists, use:
 

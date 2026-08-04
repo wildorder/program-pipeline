@@ -1,4 +1,4 @@
-<!-- BEGIN UNIVERSAL — source: ~/.cursor/templates/claude-base.md -->
+<!-- BEGIN UNIVERSAL — source: {{UNIVERSAL_SOURCE}} -->
 {{UNIVERSAL_DIRECTIVES}}
 <!-- END UNIVERSAL -->
 

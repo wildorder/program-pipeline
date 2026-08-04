@@ -13,13 +13,12 @@ Plan a new feature set or phase for the current project.
 
 Read:
 
-- `docs/vision.md`, the anchor product vision.
+- The vision document at `visionPath` from `pipeline.config.json`, the anchor
+  product vision. Use `docs/vision.md` only when no configuration exists.
 - `docs/as-built.md`, when present, for current system state.
 - `AGENTS.md` for repository directives and conventions.
 
-If `docs/vision.md` is absent, check `pipeline.config.json` for `visionPath`,
-then any legacy repository override configuration such as `.cursor/rules/`.
-If no vision document exists, stop. Explain that it should contain the product
+If no vision document exists at the resolved path, stop. Explain that it should contain the product
 description, architecture, target users, API surface, data model, phase scope,
 and technology stack. For a new repository, suggest the `init-project` skill.
 
@@ -112,7 +111,7 @@ If `docs/programs/` contains an existing `*-manifest.json`, match its schema exa
     {
       "id": "WS-01",
       "name": "{Workstream Name}",
-      "taskFile": "tasks/{program-id}/{ws-slug}.md",
+      "taskFile": "tasks/{program-id}/{ws-id}-{slug}.md",
       "status": "not_started",
       "size": "S|M|L",
       "dependencies": [],

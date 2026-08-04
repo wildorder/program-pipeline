@@ -32,6 +32,11 @@ development and testing.
 Create the standard program-pipeline structure and starter files in a project.
 Existing files are skipped.
 
+The generated `AGENTS.md` embeds a universal directives block. It is resolved
+in this order: an explicit `--directives <path>` override, then
+`~/.program-pipeline/universal-directives.md`, then the directives template
+packaged with this package.
+
 ```powershell
 npm exec program-pipeline -- init --name "Acme Dashboard" --stack "TypeScript/Node" --description "Operations dashboards for growing teams." --cwd .
 ```
@@ -52,10 +57,51 @@ Skills are installed at:
 - Claude Code: `.claude/skills/<skill-name>/SKILL.md`
 - OpenClaw: `skills/<skill-name>/SKILL.md`
 
-The installer does not silently overwrite user-authored changes. It creates
-missing skills, updates files that still match their generated checksum, and
-reports modified files as conflicts. Use `--force` only when you explicitly
-want packaged content to replace conflicting skill files.
+Before writing, the installer scans matching project and user-level command and
+skill directories for Cursor, Claude Code, and OpenClaw. Alternate definitions
+produce detailed warnings but remain untouched. A user-authored or edited file
+at an installation destination is a blocking conflict: the entire installation
+aborts before writing anything. Identical skills are skipped and unmodified
+package-generated skills update safely. Use `--force` only when you explicitly
+want packaged content to replace destination conflicts.
+
+### `build`
+
+Execute a program's workstreams in dependency order with the configured agent.
+The runner verifies every workstream itself by running the `verify` commands
+from `pipeline.config.json`, writes workstream status back to the manifest
+(`in_progress`, `complete`, `failed`), resumes by skipping workstreams already
+marked `complete`, and appends structured JSON events to
+`build-logs/{program-id}-build-{timestamp}.jsonl`.
+
+```powershell
+npm exec program-pipeline -- build phase-1 --cwd . --dry-run
+npm exec program-pipeline -- build phase-1 --cwd . --yes
+npm exec program-pipeline -- build phase-1 --cwd . --yes --start-from WS-03
+```
+
+Configure the runner in `pipeline.config.json`:
+
+```json
+{
+  "agent": { "command": "claude", "args": ["-p"], "promptMode": "stdin" },
+  "verify": { "build": "npm run build", "test": "npm test" },
+  "build": { "maxRecoveryAttempts": 1, "logDir": "build-logs" }
+}
+```
+
+The agent receives each workstream prompt on stdin by default; set
+`"promptMode": "argument"` for agents that take the prompt as a positional
+argument. `PROGRAM_PIPELINE_AGENT_COMMAND` is honored as a fallback agent
+command. When `requireApprovalBeforeBuild` is `true`, execution requires
+`--yes`; use `--dry-run` to inspect the plan first. A workstream passes only
+when the agent exits successfully **and** every `verify` command exits
+successfully — verification alone never rubber-stamps a crashed agent, and an
+agent's success claim is never trusted without verification. `--start-from`
+is rejected when it would skip a dependency that is not already `complete`.
+
+Exit codes: `0` success or planned, `1` failed or aborted, `2` approval
+required (blocked by `requireApprovalBeforeBuild` without `--yes`).
 
 ### `validate`
 

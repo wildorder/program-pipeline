@@ -110,6 +110,11 @@ Skip this step for greenfield projects.
    `pipeline.config.json`: remove documents that are stale or irrelevant and
    add any the user names. Planning workflows read every listed document, so
    the list should be signal, not bulk.
+5. **Flag legacy pipeline artifacts.** A `build-product.ps1` in the project
+   root is a leftover from a previous package version; the build runner is
+   now `program-pipeline build`. Tell the user it is obsolete and offer to
+   delete it. Treat any other stray pipeline scripts from older versions the
+   same way — never adopt them into the new workflow.
 
 ## Step 7 — Apply the version-control decisions
 

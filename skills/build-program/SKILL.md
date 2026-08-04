@@ -41,6 +41,10 @@ Read `pipeline.config.json` in the project root. The runner requires:
 If either block is missing, show the user what to add and wait for approval
 before editing `pipeline.config.json`.
 
+If a `build-product.ps1` exists in the project root, it is a legacy runner
+from a previous package version — ignore it, never invoke or update it, and
+suggest deleting it.
+
 ## Step 3 — Show the execution plan
 
 Run a dry run and present the output:

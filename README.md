@@ -3,14 +3,11 @@
 A provider-neutral TypeScript CLI and portable Agent Skills package for planning,
 validating, building, and documenting engineering programs.
 
-> Publishing status: this package is npm-ready, but it has not yet been published
-> to npm.
-
 ## Install
 
-The package is intended for public, no-auth consumption. After it is published,
-install it from the npm registry without tokens, private registry configuration,
-or repository credentials:
+Published on the public npm registry as
+[`@wildorder/program-pipeline`](https://www.npmjs.com/package/@wildorder/program-pipeline) —
+no tokens, private registry configuration, or repository credentials required:
 
 ```powershell
 npm install --save-dev @wildorder/program-pipeline
@@ -21,9 +18,6 @@ Run the local executable with `npx`:
 ```powershell
 npx program-pipeline --help
 ```
-
-Until npm publishing is performed, use the checked-out repository directly for
-development and testing.
 
 ## CLI
 

@@ -32,6 +32,10 @@ validating and which mechanism runs it (in-host or external agent). If the
 requested validator model is unavailable through both mechanisms, stop and
 ask the user to choose a supported model.
 
+When a configured model name is reported unavailable, obsolete, or renamed,
+propose the current equivalent, update `pipeline.config.json` after the user
+approves, and retry — never hand-patch model names into skill files.
+
 ## Step 1 — Identify the program
 
 Use the supplied program ID. If none was provided, ask which program to validate and wait for the answer.

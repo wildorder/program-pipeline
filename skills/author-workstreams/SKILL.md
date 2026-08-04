@@ -51,6 +51,12 @@ Do not assume provider-specific model names. If the user requests an
 unavailable model, stop and ask them to choose from the host's supported
 models.
 
+**Self-heal stale model names:** when the host or an agent CLI reports a
+configured model as unavailable, obsolete, or renamed, do not silently
+substitute and do not edit any skill file. Identify the current equivalent,
+propose updating `pipeline.config.json` (the single source of truth for
+model roles), apply the fix after the user approves, and retry.
+
 ## 1. Identify the program
 
 Use the positional program ID when supplied. Otherwise ask for it and wait.

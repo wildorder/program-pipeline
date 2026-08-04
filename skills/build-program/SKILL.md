@@ -49,6 +49,11 @@ in this step — for example "each workstream will be built by
 and approval output; never let a build start without the user having seen
 it.
 
+If a build fails because the agent CLI rejects the configured model as
+unavailable, obsolete, or renamed, propose the current equivalent, update
+the `agent` block in `pipeline.config.json` after the user approves, and
+resume the build — never work around it by invoking the agent manually.
+
 If a `build-product.ps1` exists in the project root, it is a legacy runner
 from a previous package version — ignore it, never invoke or update it, and
 suggest deleting it.

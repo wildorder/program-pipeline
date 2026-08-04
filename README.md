@@ -133,6 +133,18 @@ from Claude Code), the workflows fall back to running the `validatorAgent`
 command as a separate process, which bills through that CLI's own account.
 Same validator identity, host-appropriate mechanism.
 
+**Model names.** The pipeline has no model registry; every name belongs to
+the namespace of the tool that consumes it. Args in `agent` and
+`validatorAgent` are whatever that CLI accepts — prefer stable aliases over
+dated snapshot IDs where the CLI supports them (for example `--model opus`
+rather than a dated Opus ID), since aliases track the current model and do
+not go stale; pin an exact ID only when you need reproducibility across a
+long program. Names in `models` must be whatever the *host's* model picker
+recognizes, and these can rot as providers rename models. When any name goes
+stale, `pipeline.config.json` is the single place to fix it — the workflow
+skills are instructed to propose and apply that config fix (with your
+approval) rather than patching skill files or working around it.
+
 The agent receives each workstream prompt on stdin by default; set
 `"promptMode": "argument"` for agents that take the prompt as a positional
 argument. `PROGRAM_PIPELINE_AGENT_COMMAND` is honored as a fallback agent

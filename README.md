@@ -139,11 +139,15 @@ the namespace of the tool that consumes it. Args in `agent` and
 dated snapshot IDs where the CLI supports them (for example `--model opus`
 rather than a dated Opus ID), since aliases track the current model and do
 not go stale; pin an exact ID only when you need reproducibility across a
-long program. Names in `models` must be whatever the *host's* model picker
-recognizes, and these can rot as providers rename models. When any name goes
-stale, `pipeline.config.json` is the single place to fix it — the workflow
-skills are instructed to propose and apply that config fix (with your
-approval) rather than patching skill files or working around it.
+long program. Names in `models` are **host-neutral intent**, not host picker slugs — write
+the stable family/tier shorthand (for example `opus-5`, `sol`), and each
+host resolves that intent to its own concrete model at run time, stating the
+mapping. Host-specific slugs (Cursor variant names and the like) must never
+be written into `models` — they are meaningless to other hosts and rot the
+fastest. When any configured name genuinely goes stale,
+`pipeline.config.json` is the single place to fix it — the workflow skills
+are instructed to propose and apply that config fix (with your approval)
+rather than patching skill files or working around it.
 
 The agent receives each workstream prompt on stdin by default; set
 `"promptMode": "argument"` for agents that take the prompt as a positional

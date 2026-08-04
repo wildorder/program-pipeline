@@ -27,7 +27,10 @@ Parse these optional flags from the invocation arguments:
 When no `--validator-model` flag is given, default to `models.validator` from
 `pipeline.config.json` when the host can run it; when it cannot, fall back to
 the `validatorAgent` command from the config, run as a separate process with
-the validation instructions and all context piped to it. State which model is
+the validation instructions and all context piped to it. `models.validator`
+is host-neutral intent — resolve it to the nearest concrete model the host
+offers, state the mapping, and never rewrite the config with host-specific
+slugs. State which model is
 validating and which mechanism runs it (in-host or external agent). If the
 requested validator model is unavailable through both mechanisms, stop and
 ask the user to choose a supported model.

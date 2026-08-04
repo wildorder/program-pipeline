@@ -38,6 +38,13 @@ works in the current host:
 4. Otherwise: validate with the current model and report the validation as
    same-model rather than independent.
 
+Entries in `models` are host-neutral intent (for example `opus-5`, `sol`),
+not host-specific slugs. Resolve each to the nearest concrete model the
+current host offers and state the mapping (for example "author `opus-5` →
+`claude-opus-5-thinking-high` in this host"). Do not offer to rewrite
+`pipeline.config.json` with host-specific slugs — the config must stay
+host-neutral so every host and teammate can resolve it.
+
 Before authoring, state which model fills each role, where the choice came
 from (flag, config, external agent, or default), and which mechanism will
 run the validator, so the user can object before work begins.

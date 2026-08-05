@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildProgram,
+  sanitizedEnvironment,
   type AgentInvocation,
   type CommandResult,
 } from "../src/build-program.js";
@@ -116,6 +117,27 @@ async function manifestStatuses(root: string): Promise<Record<string, string>> {
 }
 
 const pass = async (): Promise<CommandResult> => ({ exitCode: 0, output: "ok" });
+
+describe("sanitizedEnvironment", () => {
+  it("strips agent-session markers and keeps everything else", () => {
+    const env = sanitizedEnvironment({
+      PATH: "/usr/bin",
+      HOME: "/home/dev",
+      CLAUDECODE: "1",
+      CLAUDE_CODE_ENTRYPOINT: "cli",
+      CLAUDE_CODE_SSE_PORT: "12345",
+      CURSOR_AGENT: "1",
+      CURSOR_TRACE_ID: "abc",
+      ANTHROPIC_MODEL: "sonnet",
+    });
+
+    expect(env).toEqual({
+      PATH: "/usr/bin",
+      HOME: "/home/dev",
+      ANTHROPIC_MODEL: "sonnet",
+    });
+  });
+});
 
 describe("buildProgram", () => {
   it("runs workstreams in dependency order, verifies each, and writes status back", async () => {

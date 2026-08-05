@@ -162,6 +162,12 @@ is rejected when it would skip a dependency that is not already `complete`.
 Exit codes: `0` success or planned, `1` failed or aborted, `2` approval
 required (blocked by `requireApprovalBeforeBuild` without `--yes`).
 
+Workstream agents start as clean headless sessions: the runner strips
+inherited agent-session environment markers (`CLAUDECODE`, `CLAUDE_CODE_*`,
+`CURSOR_AGENT`, `CURSOR_TRACE_*`) before spawning, so a build launched from
+inside Claude Code or Cursor cannot make the child CLI think it is attached
+to the orchestrating session.
+
 ### `validate`
 
 Run deterministic validation for a program's manifest and workstream specs.

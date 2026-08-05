@@ -2,6 +2,7 @@ export {
   buildProgram,
   defaultAgentRunner,
   defaultVerifyRunner,
+  sanitizedEnvironment,
   type AgentInvocation,
   type AgentRunner,
   type BuildOutcome,

@@ -86,6 +86,24 @@ interface ManifestWorkstream {
 // per-workstream log via onOutput streaming.
 const OUTPUT_TAIL_LIMIT = 200_000;
 
+/**
+ * Environment for workstream agents: the parent may itself be an agent
+ * session (Claude Code, Cursor), and inherited session markers can make the
+ * child CLI behave as if attached to that session instead of running as a
+ * clean headless agent.
+ */
+export function sanitizedEnvironment(
+  base: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (key === "CLAUDECODE" || key.startsWith("CLAUDE_CODE_")) continue;
+    if (key === "CURSOR_AGENT" || key.startsWith("CURSOR_TRACE_")) continue;
+    env[key] = value;
+  }
+  return env;
+}
+
 function runProcess(
   command: string,
   args: string[],
@@ -94,6 +112,7 @@ function runProcess(
     input?: string;
     shell: boolean;
     onOutput?: (chunk: string) => void;
+    env?: NodeJS.ProcessEnv;
   },
 ): Promise<CommandResult> {
   return new Promise((resolvePromise, rejectPromise) => {
@@ -102,6 +121,7 @@ function runProcess(
       shell: options.shell,
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
+      ...(options.env ? { env: options.env } : {}),
     });
     let buffered = "";
     const push = (chunk: string): void => {
@@ -138,6 +158,7 @@ export const defaultAgentRunner: AgentRunner = (invocation) =>
     {
       cwd: invocation.cwd,
       shell: process.platform === "win32",
+      env: sanitizedEnvironment(),
       ...(invocation.onOutput ? { onOutput: invocation.onOutput } : {}),
       ...(invocation.promptMode === "stdin"
         ? { input: invocation.prompt }

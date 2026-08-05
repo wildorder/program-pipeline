@@ -149,9 +149,14 @@ fastest. When any configured name genuinely goes stale,
 are instructed to propose and apply that config fix (with your approval)
 rather than patching skill files or working around it.
 
-The agent receives each workstream prompt on stdin by default; set
-`"promptMode": "argument"` for agents that take the prompt as a positional
-argument. `PROGRAM_PIPELINE_AGENT_COMMAND` is honored as a fallback agent
+The agent receives each workstream prompt on stdin by default — keep that
+default whenever the agent CLI supports it. Set `"promptMode": "argument"`
+only for agents that require the prompt as a positional argument; in that
+mode the runner always spawns the command directly (no shell), because a
+shell — cmd.exe on Windows in particular — mangles multiline prompt
+arguments. Consequence on Windows: argument mode cannot launch `.cmd` shims
+(npm-installed CLI wrappers); point `command` at a real executable or use
+stdin mode. `PROGRAM_PIPELINE_AGENT_COMMAND` is honored as a fallback agent
 command. When `requireApprovalBeforeBuild` is `true`, execution requires
 `--yes`; use `--dry-run` to inspect the plan first. A workstream passes only
 when the agent exits successfully **and** every `verify` command exits

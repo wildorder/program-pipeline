@@ -160,7 +160,13 @@ export const defaultAgentRunner: AgentRunner = (invocation) =>
       : invocation.args,
     {
       cwd: invocation.cwd,
-      shell: process.platform === "win32",
+      // A shell re-parses the argument list, and on Windows cmd.exe mangles
+      // multiline prompt arguments — so argument mode always spawns the
+      // command directly. The shell is only used on Windows for stdin mode,
+      // where it is needed to launch .cmd shims and cannot corrupt the
+      // prompt (which travels via stdin, not argv).
+      shell:
+        process.platform === "win32" && invocation.promptMode !== "argument",
       env: sanitizedEnvironment(),
       ...(invocation.onOutput ? { onOutput: invocation.onOutput } : {}),
       ...(invocation.promptMode === "stdin"

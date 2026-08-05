@@ -23,9 +23,13 @@ Read `pipeline.config.json` in the project root. The runner requires:
   "agent": { "command": "claude", "args": ["-p"], "promptMode": "stdin" }
   ```
 
-  The runner delivers each workstream prompt on stdin by default; set
-  `"promptMode": "argument"` for agents that expect the prompt as the final
-  positional argument. The `PROGRAM_PIPELINE_AGENT_COMMAND` environment
+  The runner delivers each workstream prompt on stdin by default — prefer
+  stdin whenever the agent CLI supports it. Use `"promptMode": "argument"`
+  only when the agent requires a positional prompt; argument mode spawns the
+  command directly without a shell, so on Windows it cannot launch `.cmd`
+  shims — the command must be a real executable. If prompt delivery ever
+  appears broken (agents acting as if they received no instructions), check
+  this setting first. The `PROGRAM_PIPELINE_AGENT_COMMAND` environment
   variable works as a fallback when no `agent` block exists.
 
 - **`verify`** — the commands the runner executes itself after every

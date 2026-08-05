@@ -191,9 +191,14 @@ describe("packaged CLI end to end", () => {
 
       await writeFile(
         join(project, "agent-stub.cjs"),
-        `let prompt = "";
+        `const fs = require("node:fs");
+let prompt = "";
 process.stdin.on("data", (chunk) => (prompt += chunk));
-process.stdin.on("end", () => process.exit(prompt.includes("WS-01") ? 0 : 1));
+process.stdin.on("end", () => {
+  fs.mkdirSync("src", { recursive: true });
+  fs.writeFileSync("src/core.ts", "export {};\\n");
+  process.exit(prompt.includes("WS-01") ? 0 : 1);
+});
 `,
         "utf8",
       );

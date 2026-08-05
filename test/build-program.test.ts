@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,6 +68,10 @@ async function fixture(options: FixtureOptions = {}): Promise<string> {
 
   await mkdir(join(root, "docs", "programs"), { recursive: true });
   await mkdir(join(root, "tasks", "alpha"), { recursive: true });
+  // The specs declare (NEW) src/example.ts; pre-create it so tests whose
+  // fake agents write no files still satisfy the declared-files guard.
+  await mkdir(join(root, "src"), { recursive: true });
+  await writeFile(join(root, "src", "example.ts"), "export {};\n", "utf8");
   await writeFile(
     join(root, "docs", "programs", "alpha-manifest.json"),
     `${JSON.stringify(
@@ -176,6 +181,7 @@ describe("buildProgram", () => {
       .map((line) => JSON.parse(line) as { event: string });
     expect(events.map(({ event }) => event)).toEqual([
       "build-start",
+      "tree-guard-disabled",
       "workstream-start",
       "agent-start",
       "agent-exit",
@@ -220,6 +226,67 @@ describe("buildProgram", () => {
     });
     expect(prompts[1]).toContain("failed independent verification");
     expect(prompts[1]).toContain("1 test failed");
+  });
+
+  it("fails an attempt when the agent changes nothing in a git repository", async () => {
+    const root = await fixture();
+    const git = (args: string[]): void => {
+      const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+      if (result.status !== 0) throw new Error(result.stderr);
+    };
+    git(["init"]);
+    git(["add", "-A"]);
+    git(["-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-m", "baseline"]);
+
+    let attempt = 0;
+    const prompts: string[] = [];
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        attempt += 1;
+        prompts.push(invocation.prompt);
+        // First attempt is idle; every later attempt actually edits the tree.
+        if (attempt > 1) {
+          await writeFile(
+            join(root, "src", "example.ts"),
+            `// implemented in attempt ${attempt}\n`,
+            "utf8",
+          );
+        }
+        return pass();
+      },
+      verifyRunner: pass,
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    expect(report.outcomes[0]).toMatchObject({ id: "WS-01", attempts: 2 });
+    expect(prompts[1]).toContain("made no changes to the working tree");
+  });
+
+  it("fails the workstream when declared (NEW) files are missing after the attempt", async () => {
+    const root = await fixture();
+    await rm(join(root, "src", "example.ts"));
+    const prompts: string[] = [];
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        prompts.push(invocation.prompt);
+        return pass();
+      },
+      verifyRunner: pass,
+    });
+
+    expect(report.result).toBe("FAILED");
+    expect(report.outcomes[0]).toMatchObject({
+      id: "WS-01",
+      status: "failed",
+      attempts: 2,
+    });
+    expect(prompts[1]).toContain("do not exist after the attempt");
+    expect(prompts[1]).toContain("src/example.ts");
   });
 
   it("fails an attempt when the prompt cannot be delivered, even on exit 0", async () => {

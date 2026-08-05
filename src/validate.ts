@@ -66,7 +66,11 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-function section(markdown: string, heading: string): string | undefined {
+/** Extract a level-2 section's content from a workstream spec. */
+export function specSection(
+  markdown: string,
+  heading: string,
+): string | undefined {
   const lines = markdown.split(/\r?\n/u);
   const start = lines.findIndex(
     (line) => line.trim().toLowerCase() === `## ${heading.toLowerCase()}`,
@@ -243,7 +247,7 @@ export async function validateWorkstreams(
 
     const markdown = await readFile(taskPath, "utf8");
     const traceability = ids(
-      section(markdown, SPEC_CONTRACT.sections.traceability),
+      specSection(markdown, SPEC_CONTRACT.sections.traceability),
       "SC",
     );
     if (traceability.length === 0) {
@@ -269,7 +273,10 @@ export async function validateWorkstreams(
       }
     }
 
-    const filesTouched = section(markdown, SPEC_CONTRACT.sections.filesTouched);
+    const filesTouched = specSection(
+      markdown,
+      SPEC_CONTRACT.sections.filesTouched,
+    );
     const fileLines =
       filesTouched?.split(/\r?\n/u).filter((line) => /[`/\\][^`]*`/u.test(line)) ??
       [];
@@ -292,7 +299,7 @@ export async function validateWorkstreams(
       SPEC_CONTRACT.sections.tests,
       SPEC_CONTRACT.sections.acceptanceCriteria,
     ]) {
-      if (!section(markdown, requiredSection)) {
+      if (!specSection(markdown, requiredSection)) {
         findings.push({
           severity: "major",
           code: "section-missing",

@@ -168,6 +168,16 @@ inherited agent-session environment markers (`CLAUDECODE`, `CLAUDE_CODE_*`,
 inside Claude Code or Cursor cannot make the child CLI think it is attached
 to the orchestrating session.
 
+**No-op guard.** A workstream is only complete when the agent exited
+successfully, the git working tree actually changed during the attempt,
+every file the spec declares `(NEW)` exists afterward, and all `verify`
+commands pass. An idle agent on an already-green repository fails the
+attempt instead of being falsely completed. The tree check needs a git
+repository (a `tree-guard-disabled` event is emitted without one; the
+declared-files check still applies), and deliberately re-running an
+already-implemented workstream via `--start-from` will fail as a no-op —
+that is the guard working as intended.
+
 ### `validate`
 
 Run deterministic validation for a program's manifest and workstream specs.

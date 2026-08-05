@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { stableTopologicalOrder } from "./graph.js";
 import {
@@ -8,7 +9,7 @@ import {
   type AgentConfig,
   type PipelineConfig,
 } from "./pipeline-config.js";
-import { validateWorkstreams } from "./validate.js";
+import { SPEC_CONTRACT, specSection, validateWorkstreams } from "./validate.js";
 
 export interface CommandResult {
   exitCode: number;
@@ -171,6 +172,57 @@ export const defaultVerifyRunner: VerifyRunner = (command, cwd) =>
 
 function tail(output: string, limit = 2000): string {
   return output.length > limit ? output.slice(-limit) : output;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Fingerprint of the git working tree (status incl. all untracked files,
+ * plus the uncommitted diff). Undefined when the root is not a git
+ * repository or git is unavailable. Content edits inside files git does not
+ * track are invisible to this signature; the declared-files check and
+ * verification cover the remainder.
+ */
+async function treeSignature(root: string): Promise<string | undefined> {
+  try {
+    const status = await runProcess("git", ["status", "--porcelain", "-uall"], {
+      cwd: root,
+      shell: false,
+    });
+    if (status.exitCode !== 0) return undefined;
+    const diff = await runProcess("git", ["diff", "HEAD"], {
+      cwd: root,
+      shell: false,
+    });
+    return createHash("sha256")
+      .update(`${status.output}\n${diff.exitCode === 0 ? diff.output : ""}`)
+      .digest("hex");
+  } catch {
+    return undefined;
+  }
+}
+
+/** Paths annotated (NEW) in the spec's Files Touched section. */
+function declaredNewFiles(specMarkdown: string): string[] {
+  const filesTouched = specSection(
+    specMarkdown,
+    SPEC_CONTRACT.sections.filesTouched,
+  );
+  if (!filesTouched) return [];
+  const files: string[] = [];
+  for (const line of filesTouched.split(/\r?\n/u)) {
+    if (!/\(NEW\)/u.test(line)) continue;
+    const path = line.match(/`([^`]+)`/u)?.[1];
+    if (path) files.push(path);
+  }
+  return files;
 }
 
 function workstreamPrompt(
@@ -450,6 +502,14 @@ export async function buildProgram(
     verify: Object.keys(verifyCommands),
   });
 
+  const treeGuardAvailable = (await treeSignature(root)) !== undefined;
+  if (!treeGuardAvailable) {
+    await emit("tree-guard-disabled", {
+      reason:
+        "not a git repository or git unavailable; no-op detection limited to declared (NEW) files",
+    });
+  }
+
   const outcomes: WorkstreamOutcome[] = [];
   const byId = new Map(ordered.map((workstream) => [workstream.id, workstream]));
 
@@ -471,6 +531,15 @@ export async function buildProgram(
     await writeWorkstreamStatus(manifestPath, workstream.id, "in_progress");
     await emit("workstream-start", { id: workstream.id, name: workstream.name });
 
+    let newFiles: string[] = [];
+    try {
+      newFiles = declaredNewFiles(
+        await readFile(resolve(root, workstream.taskFile), "utf8"),
+      );
+    } catch {
+      // Preflight validation already guarantees the spec exists.
+    }
+
     try {
       const maxAttempts = 1 + config.build.maxRecoveryAttempts;
       while (attempts < maxAttempts && !verified) {
@@ -479,6 +548,9 @@ export async function buildProgram(
           attempts === 1
             ? workstreamPrompt(workstream, verifyCommands)
             : recoveryPrompt(workstream, failureReason, failureOutput);
+        const baseline = treeGuardAvailable
+          ? await treeSignature(root)
+          : undefined;
 
         logStream.write(
           `=== attempt ${attempts} (${now().toISOString()}) ===\n--- prompt ---\n${prompt}\n--- agent output ---\n`,
@@ -552,6 +624,48 @@ export async function buildProgram(
           failureOutput = agentResult.output;
           logStream.write(
             `=== agent exited with code ${agentResult.exitCode} ===\n`,
+          );
+          continue;
+        }
+
+        // No-op guards: an agent that exits cleanly without implementing
+        // anything must never reach verification, because verification of an
+        // already-green repo would falsely complete the workstream.
+        if (baseline !== undefined) {
+          const after = await treeSignature(root);
+          if (after === baseline) {
+            verified = false;
+            failedCommand = undefined;
+            failureReason =
+              "The agent exited successfully but made no changes to the working tree; the workstream was not implemented.";
+            failureOutput = agentResult.output;
+            await emit("no-op", {
+              id: workstream.id,
+              attempt: attempts,
+              kind: "tree-unchanged",
+            });
+            logStream.write("=== no-op: working tree unchanged ===\n");
+            continue;
+          }
+        }
+
+        const missingNew: string[] = [];
+        for (const file of newFiles) {
+          if (!(await pathExists(resolve(root, file)))) missingNew.push(file);
+        }
+        if (missingNew.length > 0) {
+          verified = false;
+          failedCommand = undefined;
+          failureReason = `The spec declares (NEW) files that do not exist after the attempt: ${missingNew.join(", ")}.`;
+          failureOutput = agentResult.output;
+          await emit("no-op", {
+            id: workstream.id,
+            attempt: attempts,
+            kind: "missing-new-files",
+            missing: missingNew,
+          });
+          logStream.write(
+            `=== declared (NEW) files missing: ${missingNew.join(", ")} ===\n`,
           );
           continue;
         }

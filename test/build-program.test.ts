@@ -155,11 +155,13 @@ describe("buildProgram", () => {
     expect(events.map(({ event }) => event)).toEqual([
       "build-start",
       "workstream-start",
+      "agent-start",
       "agent-exit",
       "verify-start",
       "verify-result",
       "workstream-complete",
       "workstream-start",
+      "agent-start",
       "agent-exit",
       "verify-start",
       "verify-result",
@@ -196,6 +198,35 @@ describe("buildProgram", () => {
     });
     expect(prompts[1]).toContain("failed independent verification");
     expect(prompts[1]).toContain("1 test failed");
+  });
+
+  it("fails an attempt when the prompt cannot be delivered, even on exit 0", async () => {
+    const root = await fixture({ maxRecoveryAttempts: 1 });
+    let attempt = 0;
+    let verifyCalls = 0;
+    const prompts: string[] = [];
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        attempt += 1;
+        prompts.push(invocation.prompt);
+        return attempt === 1
+          ? { exitCode: 0, output: "what would you like me to do?", inputError: "EPIPE" }
+          : { exitCode: 0, output: "did the work" };
+      },
+      verifyRunner: async () => {
+        verifyCalls += 1;
+        return pass();
+      },
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    expect(report.outcomes[0]).toMatchObject({ id: "WS-01", attempts: 2 });
+    expect(prompts[1]).toContain("could not be delivered");
+    // Verification must not have run for the undelivered attempt.
+    expect(verifyCalls).toBe(2);
   });
 
   it("fails a workstream when the agent exits nonzero even if verification would pass", async () => {

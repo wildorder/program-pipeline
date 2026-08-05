@@ -13,6 +13,8 @@ import { validateWorkstreams } from "./validate.js";
 export interface CommandResult {
   exitCode: number;
   output: string;
+  /** Set when the prompt could not be fully delivered to the process stdin. */
+  inputError?: string;
 }
 
 export interface AgentInvocation {
@@ -111,11 +113,19 @@ function runProcess(
     child.stdout.on("data", push);
     child.stderr.on("data", push);
     child.on("error", rejectPromise);
+    let inputError: Error | undefined;
+    child.stdin.on("error", (error: Error) => {
+      inputError = error;
+    });
     child.on("close", (code) =>
-      resolvePromise({ exitCode: code ?? 1, output: buffered }),
+      resolvePromise({
+        exitCode: code ?? 1,
+        output: buffered,
+        ...(inputError ? { inputError: inputError.message } : {}),
+      }),
     );
-    if (options.input !== undefined) child.stdin.write(options.input);
-    child.stdin.end();
+    if (options.input !== undefined) child.stdin.end(options.input);
+    else child.stdin.end();
   });
 }
 
@@ -449,7 +459,14 @@ export async function buildProgram(
             ? workstreamPrompt(workstream, verifyCommands)
             : recoveryPrompt(workstream, failureReason, failureOutput);
 
-        logStream.write(`=== attempt ${attempts} (${now().toISOString()}) ===\n`);
+        logStream.write(
+          `=== attempt ${attempts} (${now().toISOString()}) ===\n--- prompt ---\n${prompt}\n--- agent output ---\n`,
+        );
+        await emit("agent-start", {
+          id: workstream.id,
+          attempt: attempts,
+          promptBytes: Buffer.byteLength(prompt, "utf8"),
+        });
         let agentResult: CommandResult;
         try {
           agentResult = await agentRunner({
@@ -486,7 +503,24 @@ export async function buildProgram(
           id: workstream.id,
           attempt: attempts,
           exitCode: agentResult.exitCode,
+          ...(agentResult.inputError
+            ? { inputError: agentResult.inputError }
+            : {}),
         });
+
+        // A failed prompt delivery fails the attempt regardless of exit code:
+        // an agent that never received instructions can exit 0 against an
+        // already-green repo and would otherwise be falsely completed.
+        if (agentResult.inputError) {
+          verified = false;
+          failedCommand = undefined;
+          failureReason = `The prompt could not be delivered to the agent's stdin (${agentResult.inputError}); the agent likely ran without instructions.`;
+          failureOutput = agentResult.output;
+          logStream.write(
+            `=== prompt delivery failed: ${agentResult.inputError} ===\n`,
+          );
+          continue;
+        }
 
         // A nonzero agent exit fails the attempt outright; verification alone
         // must never rubber-stamp a workstream the agent did not finish.

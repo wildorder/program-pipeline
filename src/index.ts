@@ -32,6 +32,8 @@ export {
   type InitResult,
 } from "./init-project.js";
 export {
+  ALL_TARGETS,
+  DEFAULT_TARGETS,
   doctor,
   installSkills,
   parseTargets,

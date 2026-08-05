@@ -7,8 +7,9 @@ validating, building, and documenting engineering programs.
 
 ```sh
 # 1. One-step setup: adds the devDependency and installs the workflow skills
-#    (defaults to all targets: cursor, claude, openclaw; narrow with --targets).
-#    Commit the generated files so every dev gets the workflows on git pull.
+#    (defaults to all targets: cursor, claude, openclaw, codex, gemini;
+#    narrow with --targets). Commit the generated files so every dev gets
+#    the workflows on git pull.
 npx @wildorder/program-pipeline setup
 
 # 2. In your agent, run the guided setup
@@ -85,7 +86,7 @@ packaged with this package.
 ### `install`
 
 Install all packaged workflow skills for one or more supported agents. The
-default target set is `cursor,claude,openclaw`.
+default target set is `cursor,claude,openclaw,codex,gemini`.
 
 ```sh
 npm exec program-pipeline -- install --cwd .
@@ -97,9 +98,15 @@ Skills are installed at:
 - Cursor: `.cursor/skills/<skill-name>/SKILL.md`
 - Claude Code: `.claude/skills/<skill-name>/SKILL.md`
 - OpenClaw: `skills/<skill-name>/SKILL.md`
+- Codex: `.agents/skills/<skill-name>/SKILL.md`
+- Gemini CLI: `.gemini/skills/<skill-name>/SKILL.md`
+
+Note that `.agents/skills` is the cross-tool shared directory — some other
+agents (Cursor among them) also read it, so targeting `codex` alongside
+`cursor` can surface the same skill twice in tools that scan both locations.
 
 Before writing, the installer scans matching project and user-level command and
-skill directories for Cursor, Claude Code, and OpenClaw. Alternate definitions
+skill directories for every targeted agent. Alternate definitions
 produce detailed warnings but remain untouched. A user-authored or edited file
 at an installation destination is a blocking conflict: the entire installation
 aborts before writing anything. Identical skills are skipped and unmodified
@@ -234,7 +241,7 @@ command interface in this order as needed:
 7. `/update-as-built` — snapshot the system that was actually built.
 
 The same skill names and workflow semantics are packaged for Cursor, Claude
-Code, and OpenClaw; only their installation roots differ.
+Code, OpenClaw, Codex, and Gemini CLI; only their installation roots differ.
 
 ## Development
 

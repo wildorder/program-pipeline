@@ -15,7 +15,7 @@ export const WORKFLOWS = [
 ] as const;
 
 export type Workflow = (typeof WORKFLOWS)[number];
-export type SkillTarget = "cursor" | "claude" | "openclaw";
+export type SkillTarget = "cursor" | "claude" | "openclaw" | "codex" | "gemini";
 
 export interface InstallSkillsOptions {
   cwd: string;
@@ -47,7 +47,12 @@ const TARGET_ROOTS: Record<SkillTarget, string> = {
   cursor: join(".cursor", "skills"),
   claude: join(".claude", "skills"),
   openclaw: "skills",
+  // Codex discovers skills in the cross-tool .agents/skills directory.
+  codex: join(".agents", "skills"),
+  gemini: join(".gemini", "skills"),
 };
+export const ALL_TARGETS = Object.keys(TARGET_ROOTS) as SkillTarget[];
+export const DEFAULT_TARGETS = ALL_TARGETS.join(",");
 const COMMAND_EXTENSIONS = [".md", ".mdc", ".markdown", ".txt"] as const;
 
 interface DefinitionRoot {
@@ -110,7 +115,7 @@ export function parseTargets(value: string): SkillTarget[] {
   );
   if (invalid.length > 0) {
     throw new Error(
-      `Unknown target(s): ${invalid.join(", ")}. Expected cursor, claude, or openclaw.`,
+      `Unknown target(s): ${invalid.join(", ")}. Expected: ${ALL_TARGETS.join(", ")}.`,
     );
   }
   return [...new Set(values)] as SkillTarget[];
@@ -147,6 +152,19 @@ function definitionRoots(
       { target: "openclaw", kind: "skill", scope: "project", root: join(projectRoot, "skills") },
       { target: "openclaw", kind: "skill", scope: "user", root: join(userHome, ".openclaw", "skills") },
       { target: "openclaw", kind: "skill", scope: "user", root: join(userHome, ".openclaw", "workspace", "skills") },
+    );
+  }
+  if (targets.includes("codex")) {
+    roots.push(
+      { target: "codex", kind: "skill", scope: "project", root: join(projectRoot, ".agents", "skills") },
+      { target: "codex", kind: "skill", scope: "user", root: join(userHome, ".agents", "skills") },
+      { target: "codex", kind: "skill", scope: "user", root: join(userHome, ".codex", "skills") },
+    );
+  }
+  if (targets.includes("gemini")) {
+    roots.push(
+      { target: "gemini", kind: "skill", scope: "project", root: join(projectRoot, ".gemini", "skills") },
+      { target: "gemini", kind: "skill", scope: "user", root: join(userHome, ".gemini", "skills") },
     );
   }
   return roots;

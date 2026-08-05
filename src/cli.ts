@@ -7,6 +7,7 @@ import { Command } from "commander";
 import { buildProgram } from "./build-program.js";
 import { initProject } from "./init-project.js";
 import {
+  DEFAULT_TARGETS,
   doctor,
   installSkills,
   parseTargets,
@@ -91,8 +92,8 @@ program
   .option("--cwd <path>", "Project directory", process.cwd())
   .option(
     "--targets <targets>",
-    "Comma-separated targets: cursor,claude,openclaw",
-    "cursor,claude,openclaw",
+    `Comma-separated targets: ${DEFAULT_TARGETS}`,
+    DEFAULT_TARGETS,
   )
   .option("--force", "Overwrite conflicting skill files", false)
   .action(
@@ -119,8 +120,8 @@ program
   .option("--cwd <path>", "Project directory", process.cwd())
   .option(
     "--targets <targets>",
-    "Comma-separated targets: cursor,claude,openclaw",
-    "cursor,claude,openclaw",
+    `Comma-separated targets: ${DEFAULT_TARGETS}`,
+    DEFAULT_TARGETS,
   )
   .option("--force", "Overwrite conflicting skill files", false)
   .action(

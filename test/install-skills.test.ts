@@ -29,15 +29,27 @@ describe("installSkills", () => {
     const result = await installSkills({
       cwd: root,
       home: join(root, "home"),
-      targets: ["cursor", "claude", "openclaw"],
+      targets: ["cursor", "claude", "openclaw", "codex", "gemini"],
     });
 
-    expect(result.installed).toHaveLength(WORKFLOWS.length * 3);
+    expect(result.installed).toHaveLength(WORKFLOWS.length * 5);
     expect(result.conflicts).toEqual([]);
     expect(result.warnings).toEqual([]);
     await expect(
       readFile(
         join(root, ".cursor", "skills", "plan-program", "SKILL.md"),
+        "utf8",
+      ),
+    ).resolves.toContain("program-pipeline:sha256=");
+    await expect(
+      readFile(
+        join(root, ".agents", "skills", "build-program", "SKILL.md"),
+        "utf8",
+      ),
+    ).resolves.toContain("program-pipeline:sha256=");
+    await expect(
+      readFile(
+        join(root, ".gemini", "skills", "update-as-built", "SKILL.md"),
         "utf8",
       ),
     ).resolves.toContain("program-pipeline:sha256=");

@@ -33,7 +33,9 @@
     "program-management",
     "cursor",
     "claude-code",
-    "openclaw"
+    "openclaw",
+    "codex",
+    "gemini-cli"
   ],
   "author": "Wing It Labs",
   "license": "MIT",

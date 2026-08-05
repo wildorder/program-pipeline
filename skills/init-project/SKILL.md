@@ -115,9 +115,9 @@ validator into `models`, for example:
 ## Step 5 — Confirm workflow skills are present
 
 Check whether the project already contains installed pipeline skills
-(`.cursor/skills/`, `.claude/skills/`, or `skills/`). If any target is
-present, the team has already chosen its targets — do not install more, and
-do not re-run the installer.
+(`.cursor/skills/`, `.claude/skills/`, `skills/`, `.agents/skills/`, or
+`.gemini/skills/`). If any target is present, the team has already chosen
+its targets — do not install more, and do not re-run the installer.
 
 Only when no target is installed at all (for example, when initializing a
 different project root than the one this skill is running from), ask the

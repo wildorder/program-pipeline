@@ -390,6 +390,36 @@ describe("buildProgram", () => {
     });
   });
 
+  it("reports live progress lines for key events", async () => {
+    const root = await fixture();
+    const lines: string[] = [];
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: pass,
+      verifyRunner: pass,
+      onProgress: (line) => lines.push(line),
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    expect(lines).toEqual([
+      "no-op tree guard disabled: not a git repository",
+      expect.stringContaining("build alpha: 2 workstream(s) to run, agent: fake-agent"),
+      "WS-01 start: Core (1/2)",
+      "WS-01 attempt 1/2: agent running",
+      expect.stringContaining("WS-01 agent exited 0 after"),
+      "WS-01 verify test: ok",
+      expect.stringContaining("WS-01 complete after 1 attempt(s)"),
+      "WS-02 start: API (2/2)",
+      "WS-02 attempt 1/2: agent running",
+      expect.stringContaining("WS-02 agent exited 0 after"),
+      "WS-02 verify test: ok",
+      expect.stringContaining("WS-02 complete after 1 attempt(s)"),
+      expect.stringContaining("build alpha complete: 2 workstream(s)"),
+    ]);
+  });
+
   it("resumes by skipping workstreams already marked complete", async () => {
     const root = await fixture({ statuses: { "WS-01": "complete" } });
     const ran: string[] = [];

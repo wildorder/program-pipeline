@@ -146,6 +146,7 @@ program
           : { startFrom: options.startFrom }),
         dryRun: options.dryRun,
         approve: options.yes,
+        onProgress: (line) => console.log(line),
       });
 
       if (report.agent) console.log(`agent ${report.agent}`);

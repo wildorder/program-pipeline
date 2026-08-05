@@ -39,6 +39,8 @@ export interface BuildProgramOptions {
   agentRunner?: AgentRunner;
   verifyRunner?: VerifyRunner;
   now?: () => Date;
+  /** Called with a human-readable line for each key build event. */
+  onProgress?: (line: string) => void;
 }
 
 export interface PlanEntry {
@@ -391,6 +393,9 @@ export async function buildProgram(
   const now = options.now ?? (() => new Date());
   const agentRunner = options.agentRunner ?? defaultAgentRunner;
   const verifyRunner = options.verifyRunner ?? defaultVerifyRunner;
+  const progress = options.onProgress ?? ((): void => {});
+  const minutesSince = (startMs: number): string =>
+    `${((now().getTime() - startMs) / 60_000).toFixed(1)}m`;
 
   const aborted = (reason: string, plan: PlanEntry[] = []): BuildProgramResult => ({
     programId: options.programId,
@@ -508,16 +513,26 @@ export async function buildProgram(
       reason:
         "not a git repository or git unavailable; no-op detection limited to declared (NEW) files",
     });
+    progress("no-op tree guard disabled: not a git repository");
   }
+
+  const buildStartMs = now().getTime();
+  const runTotal = plan.filter(({ action }) => action === "run").length;
+  progress(
+    `build ${options.programId}: ${runTotal} workstream(s) to run, agent: ${agentLabel ?? agent.command}`,
+  );
 
   const outcomes: WorkstreamOutcome[] = [];
   const byId = new Map(ordered.map((workstream) => [workstream.id, workstream]));
+  let runIndex = 0;
 
   for (const entry of plan) {
     if (entry.action === "skip") {
       await emit("workstream-skipped", { id: entry.id, reason: entry.reason });
+      progress(`${entry.id} skipped (${entry.reason ?? "skipped"})`);
       continue;
     }
+    runIndex += 1;
     const workstream = byId.get(entry.id) as ManifestWorkstream;
     const workstreamLog = join(logDir, `${options.programId}-${workstream.id}.log`);
     const logStream = createWriteStream(workstreamLog, { flags: "a" });
@@ -530,6 +545,10 @@ export async function buildProgram(
 
     await writeWorkstreamStatus(manifestPath, workstream.id, "in_progress");
     await emit("workstream-start", { id: workstream.id, name: workstream.name });
+    const workstreamStartMs = now().getTime();
+    progress(
+      `${workstream.id} start: ${workstream.name} (${runIndex}/${runTotal})`,
+    );
 
     let newFiles: string[] = [];
     try {
@@ -560,6 +579,8 @@ export async function buildProgram(
           attempt: attempts,
           promptBytes: Buffer.byteLength(prompt, "utf8"),
         });
+        const attemptStartMs = now().getTime();
+        progress(`${workstream.id} attempt ${attempts}/${maxAttempts}: agent running`);
         let agentResult: CommandResult;
         try {
           agentResult = await agentRunner({
@@ -573,6 +594,7 @@ export async function buildProgram(
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           await emit("agent-error", { id: workstream.id, attempt: attempts, message });
+          progress(`${workstream.id} agent failed to start: ${message}`);
           await writeWorkstreamStatus(manifestPath, workstream.id, "failed");
           outcomes.push({
             id: workstream.id,
@@ -600,6 +622,9 @@ export async function buildProgram(
             ? { inputError: agentResult.inputError }
             : {}),
         });
+        progress(
+          `${workstream.id} agent exited ${agentResult.exitCode} after ${minutesSince(attemptStartMs)}`,
+        );
 
         // A failed prompt delivery fails the attempt regardless of exit code:
         // an agent that never received instructions can exit 0 against an
@@ -611,6 +636,9 @@ export async function buildProgram(
           failureOutput = agentResult.output;
           logStream.write(
             `=== prompt delivery failed: ${agentResult.inputError} ===\n`,
+          );
+          progress(
+            `${workstream.id} prompt delivery failed (${agentResult.inputError})`,
           );
           continue;
         }
@@ -645,6 +673,7 @@ export async function buildProgram(
               kind: "tree-unchanged",
             });
             logStream.write("=== no-op: working tree unchanged ===\n");
+            progress(`${workstream.id} no-op: working tree unchanged`);
             continue;
           }
         }
@@ -666,6 +695,9 @@ export async function buildProgram(
           });
           logStream.write(
             `=== declared (NEW) files missing: ${missingNew.join(", ")} ===\n`,
+          );
+          progress(
+            `${workstream.id} no-op: missing (NEW) files: ${missingNew.join(", ")}`,
           );
           continue;
         }
@@ -691,8 +723,10 @@ export async function buildProgram(
             logStream.write(
               `=== verification failed: ${command} ===\n${tail(verifyResult.output)}\n`,
             );
+            progress(`${workstream.id} verify ${name}: FAILED (${command})`);
             break;
           }
+          progress(`${workstream.id} verify ${name}: ok`);
         }
       }
     } finally {
@@ -702,6 +736,9 @@ export async function buildProgram(
     if (verified) {
       await writeWorkstreamStatus(manifestPath, workstream.id, "complete");
       await emit("workstream-complete", { id: workstream.id, attempts });
+      progress(
+        `${workstream.id} complete after ${attempts} attempt(s) in ${minutesSince(workstreamStartMs)}`,
+      );
       outcomes.push({
         id: workstream.id,
         status: "complete",
@@ -723,6 +760,9 @@ export async function buildProgram(
         ...(failedCommand === undefined ? {} : { failedCommand }),
       });
       await emit("build-failed", { id: workstream.id });
+      progress(
+        `${workstream.id} FAILED after ${attempts} attempt(s) in ${minutesSince(workstreamStartMs)}; build stopped`,
+      );
       return {
         programId: options.programId,
         result: "FAILED",
@@ -739,6 +779,9 @@ export async function buildProgram(
     programId: options.programId,
     workstreams: outcomes.length,
   });
+  progress(
+    `build ${options.programId} complete: ${outcomes.length} workstream(s) in ${minutesSince(buildStartMs)}`,
+  );
   return {
     programId: options.programId,
     result: "COMPLETE",

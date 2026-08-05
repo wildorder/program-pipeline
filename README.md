@@ -45,6 +45,12 @@ devDependency (skipped with a warning when no `package.json` exists) and then
 runs the skills installer. Accepts the same `--targets` and `--force` options
 as `install`.
 
+Re-running `setup` is also the update path: it bumps the dependency to the
+latest published version and refreshes all unmodified package-generated
+skills to match, leaving hand-edited skills untouched (reported as
+conflicts). Commit the resulting diff. Teams pinned to an older version
+should instead use `npm update` plus `npm exec program-pipeline -- install`.
+
 ```sh
 npx @wildorder/program-pipeline setup
 npx @wildorder/program-pipeline setup --targets claude

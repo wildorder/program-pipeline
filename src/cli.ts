@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { buildProgram } from "./build-program.js";
 import { initProject } from "./init-project.js";
@@ -7,10 +10,30 @@ import {
   doctor,
   installSkills,
   parseTargets,
+  type InstallSkillsResult,
   type SkillTarget,
 } from "./install-skills.js";
 import { packageVersion } from "./package-assets.js";
 import { validateWorkstreams } from "./validate.js";
+
+function reportInstall(result: InstallSkillsResult): void {
+  for (const path of result.installed) console.log(`installed ${path}`);
+  for (const path of result.updated) console.log(`updated ${path}`);
+  for (const path of result.skipped) console.log(`unchanged ${path}`);
+  for (const warning of result.warnings) {
+    const ownership = warning.packageManaged ? "package-managed" : "external";
+    console.warn(
+      `warning ${warning.scope} ${warning.target} ${warning.kind} (${ownership}) for ${warning.workflow}: ${warning.path}`,
+    );
+  }
+  for (const path of result.conflicts) console.warn(`conflict ${path}`);
+  if (result.aborted) {
+    console.warn(
+      "installation aborted before writing files; resolve conflicts or re-run with --force",
+    );
+  }
+  if (result.conflicts.length > 0) process.exitCode = 1;
+}
 
 const program = new Command()
   .name("program-pipeline")
@@ -84,24 +107,63 @@ program
         targets,
         force: options.force,
       });
-      for (const path of result.installed) console.log(`installed ${path}`);
-      for (const path of result.updated) console.log(`updated ${path}`);
-      for (const path of result.skipped) console.log(`unchanged ${path}`);
-      for (const warning of result.warnings) {
-        const ownership = warning.packageManaged
-          ? "package-managed"
-          : "external";
+      reportInstall(result);
+    },
+  );
+
+program
+  .command("setup")
+  .description(
+    "One-step setup: add the package as a devDependency and install workflow skills",
+  )
+  .option("--cwd <path>", "Project directory", process.cwd())
+  .option(
+    "--targets <targets>",
+    "Comma-separated targets: cursor,claude,openclaw",
+    "cursor,claude,openclaw",
+  )
+  .option("--force", "Overwrite conflicting skill files", false)
+  .action(
+    async (options: { cwd: string; targets: string; force: boolean }) => {
+      const root = resolve(options.cwd);
+      const targets: SkillTarget[] = parseTargets(options.targets);
+
+      if (existsSync(join(root, "package.json"))) {
+        console.log("adding @wildorder/program-pipeline as a devDependency");
+        const exitCode = await new Promise<number>(
+          (resolvePromise, rejectPromise) => {
+            const child = spawn(
+              "npm install --save-dev @wildorder/program-pipeline",
+              { cwd: root, shell: true, stdio: "inherit", windowsHide: true },
+            );
+            child.on("error", rejectPromise);
+            child.on("close", (code) => resolvePromise(code ?? 1));
+          },
+        );
+        if (exitCode !== 0) {
+          console.error(
+            "npm install failed; skills were not installed. Fix the npm error and re-run setup.",
+          );
+          process.exitCode = 1;
+          return;
+        }
+      } else {
         console.warn(
-          `warning ${warning.scope} ${warning.target} ${warning.kind} (${ownership}) for ${warning.workflow}: ${warning.path}`,
+          "warning no package.json found; skipped adding the devDependency (run the CLI via npx, or npm init first)",
         );
       }
-      for (const path of result.conflicts) console.warn(`conflict ${path}`);
-      if (result.aborted) {
-        console.warn(
-          "installation aborted before writing files; resolve conflicts or re-run with --force",
+
+      const result = await installSkills({
+        cwd: root,
+        targets,
+        force: options.force,
+      });
+      reportInstall(result);
+      if (!result.aborted) {
+        console.log(
+          "setup complete; run /init-project from your agent to continue",
         );
       }
-      if (result.conflicts.length > 0) process.exitCode = 1;
     },
   );
 

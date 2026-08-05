@@ -6,15 +6,12 @@ validating, building, and documenting engineering programs.
 ## Get started
 
 ```sh
-# 1. Add the package to your project
-npm install --save-dev @wildorder/program-pipeline
+# 1. One-step setup: adds the devDependency and installs the workflow skills
+#    (defaults to all targets: cursor, claude, openclaw; narrow with --targets).
+#    Commit the generated files so every dev gets the workflows on git pull.
+npx @wildorder/program-pipeline setup
 
-# 2. Install the workflow skills (defaults to all targets: cursor, claude, openclaw;
-#    narrow with --targets if you prefer). Commit the generated files so every
-#    dev gets the workflows on git pull without running install.
-npm exec program-pipeline -- install --cwd .
-
-# 3. In your agent, run the guided setup
+# 2. In your agent, run the guided setup
 #    /init-project
 ```
 
@@ -40,6 +37,18 @@ npx program-pipeline --help
 ```
 
 ## CLI
+
+### `setup`
+
+One-step onboarding for a project: adds `@wildorder/program-pipeline` as a
+devDependency (skipped with a warning when no `package.json` exists) and then
+runs the skills installer. Accepts the same `--targets` and `--force` options
+as `install`.
+
+```sh
+npx @wildorder/program-pipeline setup
+npx @wildorder/program-pipeline setup --targets claude
+```
 
 ### `init`
 

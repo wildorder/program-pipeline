@@ -126,7 +126,10 @@ Do not include other workstream specs or program documents.]
 [Target package or directory.]
 
 ## Files Touched
-[Every file marked `(NEW)` or `(MODIFY)`.]
+[One list item per touched file: `- \`path/to/file.ts\` (NEW)` or
+`(MODIFY — optional short note)`. Only list items are validated as file
+entries; keep context about untouched files in prose or blockquotes, not
+bullets.]
 
 ## Existing Interfaces to Consume
 [Paste 10–30 lines of the actual interfaces consumed from existing code.

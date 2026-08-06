@@ -124,6 +124,37 @@ describe("validateWorkstreams", () => {
     expect(codes).toContain("files-annotation-missing");
   });
 
+  it("accepts annotation notes and non-bullet commentary in Files Touched", async () => {
+    const spec = validSpec.replace(
+      "## Files Touched\n- (NEW) `src/core.ts`",
+      `## Files Touched
+- \`src/core.ts\` (NEW)
+- \`src/props.ts\` (MODIFY — extend props)
+1. \`src/routes.ts\` (MODIFY)
+
+> UNTOUCHED for context: \`src/legacy.ts\` stays as is.
+Prose mentioning \`src/other.ts\` is also fine.`,
+    );
+    const root = await fixture(
+      manifest([
+        {
+          id: "WS-01",
+          name: "Core",
+          taskFile: "tasks/alpha/ws-01.md",
+          status: "not_started",
+          dependencies: [],
+          packages: ["app"],
+        },
+      ]),
+      { "tasks/alpha/ws-01.md": spec },
+    );
+
+    const report = await validateWorkstreams(root, "alpha");
+
+    expect(report.findings).toEqual([]);
+    expect(report.result).toBe("PASSED");
+  });
+
   it("rejects task paths outside the project root", async () => {
     const root = await fixture(
       manifest([

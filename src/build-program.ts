@@ -224,9 +224,11 @@ function declaredNewFiles(specMarkdown: string): string[] {
     SPEC_CONTRACT.sections.filesTouched,
   );
   if (!filesTouched) return [];
+  const fileEntry = new RegExp(SPEC_CONTRACT.fileEntryPattern, "u");
+  const newAnnotation = new RegExp(SPEC_CONTRACT.newFileAnnotationPattern, "u");
   const files: string[] = [];
   for (const line of filesTouched.split(/\r?\n/u)) {
-    if (!/\(NEW\)/u.test(line)) continue;
+    if (!fileEntry.test(line) || !newAnnotation.test(line)) continue;
     const path = line.match(/`([^`]+)`/u)?.[1];
     if (path) files.push(path);
   }

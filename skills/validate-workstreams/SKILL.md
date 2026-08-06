@@ -96,7 +96,9 @@ Classify every finding as `blocker`, `major`, or `minor`.
 - Any workstream with zero traceability mapping.
 - Dependency references to non-existent workstream IDs.
 - Cycles in the dependency graph.
-- Missing `Files Touched` annotations `(NEW)` or `(MODIFY)`.
+- Missing `Files Touched` annotations `(NEW)` or `(MODIFY)` on bulleted file
+  entries. A short note after the keyword is allowed (`(MODIFY — extend
+  props)`), and non-bullet lines are commentary, not file entries.
 
 ### Major checks
 

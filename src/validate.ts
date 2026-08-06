@@ -20,7 +20,11 @@ export const SPEC_CONTRACT = {
   },
   successCriterionIdPattern: "SC-\\d{2,}",
   workstreamIdPattern: "WS-\\d{2,}",
-  fileAnnotationPattern: "\\((?:NEW|MODIFY)\\)",
+  /** A short note may follow the keyword: `(MODIFY — extend props)`. */
+  fileAnnotationPattern: "\\((?:NEW|MODIFY)\\b[^)]*\\)",
+  newFileAnnotationPattern: "\\(NEW\\b[^)]*\\)",
+  /** Only list items count as file entries; other lines are commentary. */
+  fileEntryPattern: "^\\s*(?:[-*]|\\d+\\.)\\s",
 } as const;
 
 export interface Finding {
@@ -277,9 +281,13 @@ export async function validateWorkstreams(
       markdown,
       SPEC_CONTRACT.sections.filesTouched,
     );
+    const fileEntry = new RegExp(SPEC_CONTRACT.fileEntryPattern, "u");
     const fileLines =
-      filesTouched?.split(/\r?\n/u).filter((line) => /[`/\\][^`]*`/u.test(line)) ??
-      [];
+      filesTouched
+        ?.split(/\r?\n/u)
+        .filter(
+          (line) => fileEntry.test(line) && /[`/\\][^`]*`/u.test(line),
+        ) ?? [];
     const annotation = new RegExp(SPEC_CONTRACT.fileAnnotationPattern, "u");
     if (
       !filesTouched ||

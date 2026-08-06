@@ -33,8 +33,12 @@ works in the current host:
    `pipeline.config.json`, run as a separate process — pipe it the
    validation instructions plus the spec, manifest, and program document
    contents, since it shares no session context (billing flows through that
-   CLI's own account). This is how a cross-provider validator works from
-   hosts that cannot switch providers.
+   CLI's own account). Resolve `models.validator` into that CLI's own model
+   namespace and pass it explicitly via the CLI's model flag (for example
+   `codex exec --model <resolved-slug>`); never rely on the external CLI's
+   default model silently, and never expect the CLI to understand the
+   host-neutral intent string verbatim. This is how a cross-provider
+   validator works from hosts that cannot switch providers.
 4. Otherwise: validate with the current model and report the validation as
    same-model rather than independent.
 

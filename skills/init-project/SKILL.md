@@ -63,16 +63,26 @@ implicit — it is the most consequential configuration in the pipeline:
    the tradeoff and respect the choice.
 
 **Always set `validatorAgent`.** Alongside `models.validator`, always
-propose and write the external agent command that runs the validator model —
-for example `{ "command": "codex", "args": ["exec", "--model", "gpt-sol"] }`
-for a GPT validator, or `{ "command": "claude", "args": ["-p", "--model",
-"opus"] }` for an Anthropic one. Do not skip it because the current host can
-switch models in-host: the config describes the team's pipeline, and other
-hosts (or teammates) without in-host switching depend on the fallback. Hosts
-that can switch in-host ignore it; hosts that cannot use it (each mechanism
-bills through its own account). Check whether the external CLI is available
-on this machine and warn if it is not installed or authenticated — but still
-write the configuration.
+propose and write the external agent command that can run the validator —
+for example `{ "command": "codex", "args": ["exec"] }` for a GPT validator,
+or `{ "command": "claude", "args": ["-p"] }` for an Anthropic one. Do not
+skip it because the current host can switch models in-host: the config
+describes the team's pipeline, and other hosts (or teammates) without
+in-host switching depend on the fallback. Hosts that can switch in-host
+ignore it; hosts that cannot use it (each mechanism bills through its own
+account). Check whether the external CLI is available on this machine and
+warn if it is not installed or authenticated — but still write the
+configuration.
+
+**Never hardcode a model flag in `validatorAgent.args`.** The validator's
+identity lives only in `models.validator`; validation workflows resolve that
+intent into the external CLI's own model namespace at invocation time and
+pass the CLI's model flag themselves. Duplicating the model into the args —
+especially as a host-neutral shorthand the CLI does not recognize — causes
+first-run failures and lets the two declarations drift. (The builder `agent`
+block is the deliberate exception: the deterministic runner passes its args
+verbatim, so the builder's model flag belongs there, spelled in that CLI's
+own vocabulary.)
 
 If the user has no preference, record the host's current model for author,
 recommend a distinct validator, and leave the builder for the
@@ -108,7 +118,7 @@ validator into `models`, for example:
 
 ```json
 "agent": { "command": "claude", "args": ["-p", "--model", "sonnet"] },
-"validatorAgent": { "command": "codex", "args": ["exec", "--model", "gpt-sol"] },
+"validatorAgent": { "command": "codex", "args": ["exec"] },
 "models": { "author": "claude-code/opus", "validator": "gpt-sol" }
 ```
 

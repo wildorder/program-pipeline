@@ -133,7 +133,7 @@ Configure the runner in `pipeline.config.json`:
 ```json
 {
   "agent": { "command": "claude", "args": ["-p", "--model", "sonnet"], "promptMode": "stdin" },
-  "validatorAgent": { "command": "codex", "args": ["exec", "--model", "gpt-sol"] },
+  "validatorAgent": { "command": "codex", "args": ["exec"] },
   "models": { "author": "claude-code/opus", "validator": "gpt-sol" },
   "verify": { "build": "npm run build", "test": "npm test" },
   "build": { "maxRecoveryAttempts": 1, "logDir": "build-logs" }
@@ -154,6 +154,14 @@ through the host; when it cannot (for example a cross-provider validator
 from Claude Code), the workflows fall back to running the `validatorAgent`
 command as a separate process, which bills through that CLI's own account.
 Same validator identity, host-appropriate mechanism.
+
+`validatorAgent` declares the invocation mechanism only — command, base
+args, prompt mode. Do not put a model flag in its args: the validator's
+identity lives solely in `models.validator`, and the workflows resolve that
+intent into the external CLI's model namespace when they invoke it. (The
+builder `agent` block is the exception: the deterministic runner passes its
+args verbatim, so the builder's model flag belongs there, spelled the way
+that CLI expects.)
 
 **Model names.** The pipeline has no model registry; every name belongs to
 the namespace of the tool that consumes it. Args in `agent` and

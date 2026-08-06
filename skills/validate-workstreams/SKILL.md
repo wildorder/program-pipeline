@@ -29,8 +29,10 @@ When no `--validator-model` flag is given, default to `models.validator` from
 the `validatorAgent` command from the config, run as a separate process with
 the validation instructions and all context piped to it. `models.validator`
 is host-neutral intent — resolve it to the nearest concrete model the host
-offers, state the mapping, and never rewrite the config with host-specific
-slugs. State which model is
+offers (or, for the external mechanism, to a model identifier the external
+CLI accepts, passed via that CLI's model flag), state the mapping, and never
+rewrite the config with host-specific slugs or hardcode a model flag into
+`validatorAgent.args`. State which model is
 validating and which mechanism runs it (in-host or external agent). If the
 requested validator model is unavailable through both mechanisms, stop and
 ask the user to choose a supported model.

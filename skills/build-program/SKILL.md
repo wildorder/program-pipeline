@@ -90,12 +90,29 @@ The runner performs, per workstream:
 
 1. Mark the workstream `in_progress` in the manifest.
 2. Invoke the configured agent with the workstream prompt.
-3. Run every `verify` command itself; any failure triggers one focused
+3. Run every `verify` command itself; a failed verify command is retried
+   in place first (configurable via `build.verifyRetries`, default 1, which
+   absorbs flaky tests), and a persistent failure triggers one focused
    recovery attempt (configurable via `build.maxRecoveryAttempts`).
 4. Mark the workstream `complete` or `failed` and append structured JSON
    events to `build-logs/{program-id}-build-{timestamp}.jsonl`.
 
 A failed workstream stops the build with a nonzero exit code.
+
+Two failure modes resolve themselves on re-run — recognize them instead of
+debugging the workstream:
+
+- **Agent environment failure** (the reason names it): the agent CLI died
+  at startup — usually a usage/rate limit ("session limit" in the output
+  tail) or a credential problem. The workstream was not attempted; re-run
+  the build once the agent CLI is healthy and it resumes from that
+  workstream.
+- **No-op with prior work**: when a previous attempt already landed the
+  implementation, a re-run agent that changes nothing proceeds to
+  verification automatically (the runner compares against the tree
+  fingerprint from the workstream's first attempt, persisted in
+  `build-logs/{program-id}-baselines.json`) — already-implemented work
+  verifies and completes without manual manifest edits.
 
 ## Step 5 — Report
 

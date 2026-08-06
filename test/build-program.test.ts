@@ -41,6 +41,7 @@ interface FixtureOptions {
   agent?: Record<string, unknown>;
   statuses?: Record<string, string>;
   maxRecoveryAttempts?: number;
+  verifyRetries?: number;
 }
 
 async function fixture(options: FixtureOptions = {}): Promise<string> {
@@ -100,9 +101,19 @@ async function fixture(options: FixtureOptions = {}): Promise<string> {
         validatorAgent: { command: "codex", args: ["exec", "--model", "gpt-sol"] },
         models: { author: "claude-code/opus", validator: "gpt-sol" },
         verify: options.verify ?? { test: "npm test" },
-        ...(options.maxRecoveryAttempts === undefined
+        ...(options.maxRecoveryAttempts === undefined &&
+        options.verifyRetries === undefined
           ? {}
-          : { build: { maxRecoveryAttempts: options.maxRecoveryAttempts } }),
+          : {
+              build: {
+                ...(options.maxRecoveryAttempts === undefined
+                  ? {}
+                  : { maxRecoveryAttempts: options.maxRecoveryAttempts }),
+                ...(options.verifyRetries === undefined
+                  ? {}
+                  : { verifyRetries: options.verifyRetries }),
+              },
+            }),
       },
       null,
       2,
@@ -122,6 +133,16 @@ async function manifestStatuses(root: string): Promise<Record<string, string>> {
 }
 
 const pass = async (): Promise<CommandResult> => ({ exitCode: 0, output: "ok" });
+
+function initGitRepo(root: string): void {
+  const git = (args: string[]): void => {
+    const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+    if (result.status !== 0) throw new Error(result.stderr);
+  };
+  git(["init"]);
+  git(["add", "-A"]);
+  git(["-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-m", "baseline"]);
+}
 
 describe("sanitizedEnvironment", () => {
   it("strips agent-session markers and keeps everything else", () => {
@@ -199,7 +220,9 @@ describe("buildProgram", () => {
   });
 
   it("does not trust the agent exit code and recovers once on verification failure", async () => {
-    const root = await fixture({ maxRecoveryAttempts: 1 });
+    // verifyRetries: 0 so the verify failure reaches the recovery path
+    // instead of being absorbed by the in-attempt retry.
+    const root = await fixture({ maxRecoveryAttempts: 1, verifyRetries: 0 });
     let verifyAttempts = 0;
     const prompts: string[] = [];
 
@@ -230,13 +253,7 @@ describe("buildProgram", () => {
 
   it("fails an attempt when the agent changes nothing in a git repository", async () => {
     const root = await fixture();
-    const git = (args: string[]): void => {
-      const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
-      if (result.status !== 0) throw new Error(result.stderr);
-    };
-    git(["init"]);
-    git(["add", "-A"]);
-    git(["-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-m", "baseline"]);
+    initGitRepo(root);
 
     let attempt = 0;
     const prompts: string[] = [];
@@ -262,6 +279,154 @@ describe("buildProgram", () => {
     expect(report.result).toBe("COMPLETE");
     expect(report.outcomes[0]).toMatchObject({ id: "WS-01", attempts: 2 });
     expect(prompts[1]).toContain("made no changes to the working tree");
+  });
+
+  it("retries a failed verify command within the attempt before recovering", async () => {
+    const root = await fixture(); // default verifyRetries: 1
+    let verifyCalls = 0;
+    const prompts: string[] = [];
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        prompts.push(invocation.prompt);
+        return pass();
+      },
+      verifyRunner: async () => {
+        verifyCalls += 1;
+        return verifyCalls === 1
+          ? { exitCode: 1, output: "flaky timeout" }
+          : pass();
+      },
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    expect(report.outcomes[0]).toMatchObject({ id: "WS-01", attempts: 1 });
+    // No recovery prompt: WS-01 and WS-02 each got only their first prompt.
+    expect(prompts).toHaveLength(2);
+    // WS-01: fail then retry-pass; WS-02: pass.
+    expect(verifyCalls).toBe(3);
+  });
+
+  it("accepts a no-op recovery attempt when prior work is present and verifies it", async () => {
+    const root = await fixture({ maxRecoveryAttempts: 1, verifyRetries: 0 });
+    initGitRepo(root);
+    let ws01Calls = 0;
+    let verifyCalls = 0;
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        if (invocation.prompt.includes("WS-02")) {
+          await writeFile(join(root, "src", "example.ts"), "// ws-02\n", "utf8");
+          return pass();
+        }
+        ws01Calls += 1;
+        // Attempt 1 implements; the recovery attempt correctly changes nothing.
+        if (ws01Calls === 1) {
+          await writeFile(
+            join(root, "src", "example.ts"),
+            "// implemented\n",
+            "utf8",
+          );
+        }
+        return pass();
+      },
+      verifyRunner: async () => {
+        verifyCalls += 1;
+        // WS-01 attempt 1 fails verification (flaky); everything after passes.
+        return verifyCalls === 1
+          ? { exitCode: 1, output: "flaky failure" }
+          : pass();
+      },
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    expect(report.outcomes[0]).toMatchObject({
+      id: "WS-01",
+      status: "complete",
+      attempts: 2,
+    });
+  });
+
+  it("resumes a failed workstream across runs when the work already landed", async () => {
+    const root = await fixture({ maxRecoveryAttempts: 0, verifyRetries: 0 });
+    initGitRepo(root);
+
+    // Run 1: the agent implements WS-01 but verification fails.
+    const first = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        await writeFile(
+          join(root, "src", "example.ts"),
+          "// implemented\n",
+          "utf8",
+        );
+        return pass();
+      },
+      verifyRunner: async () => ({ exitCode: 1, output: "flaky failure" }),
+    });
+    expect(first.result).toBe("FAILED");
+
+    // Run 2: the WS-01 agent finds the work in place and changes nothing;
+    // the persisted baseline lets the no-op proceed to verification.
+    let verifyCalls = 0;
+    const second = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        if (invocation.prompt.includes("WS-02")) {
+          await writeFile(join(root, "src", "example.ts"), "// ws-02\n", "utf8");
+        }
+        return pass();
+      },
+      verifyRunner: async () => {
+        verifyCalls += 1;
+        return pass();
+      },
+    });
+
+    expect(second.result).toBe("COMPLETE");
+    expect(second.outcomes[0]).toMatchObject({
+      id: "WS-01",
+      status: "complete",
+      attempts: 1,
+    });
+    expect(verifyCalls).toBeGreaterThan(0);
+  });
+
+  it("stops the build as an environmental failure when the agent dies instantly with no changes", async () => {
+    const root = await fixture({ maxRecoveryAttempts: 1 });
+    initGitRepo(root);
+    let agentCalls = 0;
+    let verifyCalls = 0;
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        agentCalls += 1;
+        return { exitCode: 1, output: "You've hit your session limit" };
+      },
+      verifyRunner: async () => {
+        verifyCalls += 1;
+        return pass();
+      },
+    });
+
+    expect(report.result).toBe("FAILED");
+    expect(report.reason).toContain("environment failure");
+    expect(report.reason).toContain("session limit");
+    // The recovery attempt is not burned on an environmental failure.
+    expect(agentCalls).toBe(1);
+    expect(verifyCalls).toBe(0);
+    await expect(manifestStatuses(root)).resolves.toEqual({
+      "WS-01": "failed",
+      "WS-02": "not_started",
+    });
   });
 
   it("fails the workstream when declared (NEW) files are missing after the attempt", async () => {

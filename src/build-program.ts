@@ -89,6 +89,11 @@ interface ManifestWorkstream {
 // per-workstream log via onOutput streaming.
 const OUTPUT_TAIL_LIMIT = 200_000;
 
+// A nonzero agent exit this soon after spawn, with the tree untouched, means
+// the agent never got to work (usage limit, credentials, startup failure) —
+// an environmental failure, not the workstream's.
+const AGENT_ENVIRONMENT_FAILURE_MS = 30_000;
+
 /**
  * Environment for workstream agents: the parent may itself be an agent
  * session (Claude Code, Cursor), and inherited session markers can make the
@@ -196,16 +201,23 @@ async function pathExists(path: string): Promise<boolean> {
  * plus the uncommitted diff). Undefined when the root is not a git
  * repository or git is unavailable. Content edits inside files git does not
  * track are invisible to this signature; the declared-files check and
- * verification cover the remainder.
+ * verification cover the remainder. The runner's own log directory is
+ * excluded: the runner writes logs and baseline state there mid-build, and
+ * those writes must never register as workstream changes.
  */
-async function treeSignature(root: string): Promise<string | undefined> {
+async function treeSignature(
+  root: string,
+  excludeDir?: string,
+): Promise<string | undefined> {
+  const pathspec = excludeDir ? ["--", ".", `:(exclude)${excludeDir}`] : [];
   try {
-    const status = await runProcess("git", ["status", "--porcelain", "-uall"], {
-      cwd: root,
-      shell: false,
-    });
+    const status = await runProcess(
+      "git",
+      ["status", "--porcelain", "-uall", ...pathspec],
+      { cwd: root, shell: false },
+    );
     if (status.exitCode !== 0) return undefined;
-    const diff = await runProcess("git", ["diff", "HEAD"], {
+    const diff = await runProcess("git", ["diff", "HEAD", ...pathspec], {
       cwd: root,
       shell: false,
     });
@@ -515,7 +527,25 @@ export async function buildProgram(
     verify: Object.keys(verifyCommands),
   });
 
-  const treeGuardAvailable = (await treeSignature(root)) !== undefined;
+  // Tree signatures captured before each workstream's first-ever attempt,
+  // persisted across runs. They let the no-op guard distinguish an agent
+  // that did nothing from one that found prior attempts' work already in
+  // place — without this, a workstream whose implementation landed in an
+  // earlier run can never pass a re-run (every honest agent no-ops).
+  const baselinesPath = join(logDir, `${options.programId}-baselines.json`);
+  let originalBaselines: Record<string, string> = {};
+  try {
+    originalBaselines = JSON.parse(await readFile(baselinesPath, "utf8")) as Record<
+      string,
+      string
+    >;
+  } catch {
+    // First build for this program, or the state file was removed.
+  }
+
+  const signTree = (): Promise<string | undefined> =>
+    treeSignature(root, config.build.logDir);
+  const treeGuardAvailable = (await signTree()) !== undefined;
   if (!treeGuardAvailable) {
     await emit("tree-guard-disabled", {
       reason:
@@ -553,6 +583,17 @@ export async function buildProgram(
 
     await writeWorkstreamStatus(manifestPath, workstream.id, "in_progress");
     await emit("workstream-start", { id: workstream.id, name: workstream.name });
+    if (treeGuardAvailable && originalBaselines[workstream.id] === undefined) {
+      const original = await signTree();
+      if (original !== undefined) {
+        originalBaselines[workstream.id] = original;
+        await writeFile(
+          baselinesPath,
+          `${JSON.stringify(originalBaselines, null, 2)}\n`,
+          "utf8",
+        );
+      }
+    }
     const workstreamStartMs = now().getTime();
     progress(
       `${workstream.id} start: ${workstream.name} (${runIndex}/${runTotal})`,
@@ -575,9 +616,7 @@ export async function buildProgram(
           attempts === 1
             ? workstreamPrompt(workstream, verifyCommands)
             : recoveryPrompt(workstream, failureReason, failureOutput);
-        const baseline = treeGuardAvailable
-          ? await treeSignature(root)
-          : undefined;
+        const baseline = treeGuardAvailable ? await signTree() : undefined;
 
         logStream.write(
           `=== attempt ${attempts} (${now().toISOString()}) ===\n--- prompt ---\n${prompt}\n--- agent output ---\n`,
@@ -654,6 +693,40 @@ export async function buildProgram(
         // A nonzero agent exit fails the attempt outright; verification alone
         // must never rubber-stamp a workstream the agent did not finish.
         if (agentResult.exitCode !== 0) {
+          const environmental =
+            baseline !== undefined &&
+            now().getTime() - attemptStartMs < AGENT_ENVIRONMENT_FAILURE_MS &&
+            (await signTree()) === baseline;
+          if (environmental) {
+            await emit("agent-environment-failure", {
+              id: workstream.id,
+              attempt: attempts,
+              exitCode: agentResult.exitCode,
+            });
+            logStream.write(
+              `=== agent environment failure: exit ${agentResult.exitCode} with no changes ===\n`,
+            );
+            progress(
+              `${workstream.id} agent environment failure: exited ${agentResult.exitCode} in ${minutesSince(attemptStartMs)} with no changes; build stopped`,
+            );
+            await writeWorkstreamStatus(manifestPath, workstream.id, "failed");
+            outcomes.push({
+              id: workstream.id,
+              status: "failed",
+              attempts,
+              agentExitCodes,
+            });
+            await emit("build-failed", { id: workstream.id });
+            return {
+              programId: options.programId,
+              result: "FAILED",
+              reason: `Agent environment failure for ${workstream.id}: the agent exited ${agentResult.exitCode} almost immediately without touching the working tree (likely a rate/usage limit, credential, or startup problem — not a workstream defect). Re-run the build to resume once the agent CLI is healthy. Output tail: ${tail(agentResult.output, 300).trim()}`,
+              ...agentField,
+              plan,
+              outcomes,
+              eventsPath,
+            };
+          }
           verified = false;
           failedCommand = undefined;
           failureReason = `The agent process exited with code ${agentResult.exitCode} before completing the workstream.`;
@@ -668,21 +741,40 @@ export async function buildProgram(
         // anything must never reach verification, because verification of an
         // already-green repo would falsely complete the workstream.
         if (baseline !== undefined) {
-          const after = await treeSignature(root);
+          const after = await signTree();
           if (after === baseline) {
-            verified = false;
-            failedCommand = undefined;
-            failureReason =
-              "The agent exited successfully but made no changes to the working tree; the workstream was not implemented.";
-            failureOutput = agentResult.output;
-            await emit("no-op", {
-              id: workstream.id,
-              attempt: attempts,
-              kind: "tree-unchanged",
-            });
-            logStream.write("=== no-op: working tree unchanged ===\n");
-            progress(`${workstream.id} no-op: working tree unchanged`);
-            continue;
+            const original = originalBaselines[workstream.id];
+            if (original !== undefined && after !== original) {
+              // The tree already differs from how it stood before this
+              // workstream's first attempt: earlier attempts left work in
+              // place, so an agent that changes nothing is reporting
+              // "already implemented", not idling. Let verification decide.
+              await emit("no-op-accepted", {
+                id: workstream.id,
+                attempt: attempts,
+                kind: "prior-work-present",
+              });
+              logStream.write(
+                "=== no-op accepted: prior work present, verifying ===\n",
+              );
+              progress(
+                `${workstream.id} no-op with prior work present: verifying`,
+              );
+            } else {
+              verified = false;
+              failedCommand = undefined;
+              failureReason =
+                "The agent exited successfully but made no changes to the working tree, and no prior attempt changed it either; the workstream was not implemented.";
+              failureOutput = agentResult.output;
+              await emit("no-op", {
+                id: workstream.id,
+                attempt: attempts,
+                kind: "tree-unchanged",
+              });
+              logStream.write("=== no-op: working tree unchanged ===\n");
+              progress(`${workstream.id} no-op: working tree unchanged`);
+              continue;
+            }
           }
         }
 
@@ -714,15 +806,34 @@ export async function buildProgram(
         failureOutput = "";
         verified = true;
         for (const [name, command] of Object.entries(verifyCommands)) {
-          await emit("verify-start", { id: workstream.id, attempt: attempts, name });
-          const verifyResult = await verifyRunner(command, root);
-          await emit("verify-result", {
-            id: workstream.id,
-            attempt: attempts,
-            name,
-            command,
-            exitCode: verifyResult.exitCode,
-          });
+          // A failure that vanishes on an immediate re-run is a flaky verify
+          // command, not a workstream defect — retry before spending a
+          // recovery agent on it.
+          const maxRuns = 1 + config.build.verifyRetries;
+          let verifyResult: CommandResult = { exitCode: 1, output: "" };
+          for (let run = 1; run <= maxRuns; run += 1) {
+            await emit("verify-start", {
+              id: workstream.id,
+              attempt: attempts,
+              name,
+              run,
+            });
+            verifyResult = await verifyRunner(command, root);
+            await emit("verify-result", {
+              id: workstream.id,
+              attempt: attempts,
+              name,
+              command,
+              exitCode: verifyResult.exitCode,
+              run,
+            });
+            if (verifyResult.exitCode === 0) break;
+            if (run < maxRuns) {
+              progress(
+                `${workstream.id} verify ${name}: failed, retrying (${run}/${config.build.verifyRetries})`,
+              );
+            }
+          }
           if (verifyResult.exitCode !== 0) {
             verified = false;
             failedCommand = command;

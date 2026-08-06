@@ -136,9 +136,22 @@ Configure the runner in `pipeline.config.json`:
   "validatorAgent": { "command": "codex", "args": ["exec"] },
   "models": { "author": "claude-code/opus", "validator": "gpt-sol" },
   "verify": { "build": "npm run build", "test": "npm test" },
-  "build": { "maxRecoveryAttempts": 1, "logDir": "build-logs" }
+  "build": { "maxRecoveryAttempts": 1, "verifyRetries": 1, "logDir": "build-logs" }
 }
 ```
+
+`build.maxRecoveryAttempts` bounds recovery agents per workstream, and
+`build.verifyRetries` (default 1) re-runs a failed verify command before the
+failure counts against the attempt — absorbing flaky tests instead of
+spending a recovery agent on them. The runner also fingerprints the working
+tree before each workstream's first attempt (persisted to
+`build-logs/{program-id}-baselines.json`): an agent that changes nothing on
+an untouched workstream is failed as a no-op, but once earlier attempts have
+left work in the tree, a no-op attempt proceeds to verification instead — so
+a resumed build cannot dead-end on already-implemented work. A nonzero agent
+exit moments after spawn with an unchanged tree stops the build as an agent
+environment failure (usage limit, credentials, startup problem) rather than
+burning recovery attempts on instant repeats of the same error.
 
 Model roles are explicit, not implicit: the `agent` block is the single
 source of truth for what builds each workstream (the runner prints the

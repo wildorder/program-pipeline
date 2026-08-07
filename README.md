@@ -51,6 +51,7 @@ from the `packageManager` field in `package.json` and then from the lockfile
 (`pnpm-lock.yaml`, `yarn.lock`, `bun.lockb`/`bun.lock`, `package-lock.json`),
 walking up from `--cwd` so workspace packages resolve to the repo root's
 manager. Falls back to npm; override detection with `--pm <npm|pnpm|yarn|bun>`.
+At a pnpm workspace root the dependency is added with `pnpm add -D -w`.
 
 Re-running `setup` is also the update path: it bumps the dependency to the
 latest published version and refreshes all unmodified package-generated

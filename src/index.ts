@@ -16,6 +16,7 @@ export {
 export {
   addDevDependencyCommand,
   detectPackageManager,
+  isPnpmWorkspaceRoot,
   PACKAGE_MANAGERS,
   parsePackageManager,
   type PackageManager,

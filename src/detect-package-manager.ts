@@ -65,15 +65,22 @@ export function detectPackageManager(cwd: string): PackageManager {
   }
 }
 
+/** pnpm workspaces are always declared by a pnpm-workspace.yaml at the root. */
+export function isPnpmWorkspaceRoot(directory: string): boolean {
+  return existsSync(join(directory, "pnpm-workspace.yaml"));
+}
+
 export function addDevDependencyCommand(
   manager: PackageManager,
   packageName: string,
+  options: { pnpmWorkspaceRoot?: boolean } = {},
 ): string {
   switch (manager) {
     case "npm":
       return `npm install --save-dev ${packageName}`;
     case "pnpm":
-      return `pnpm add -D ${packageName}`;
+      // pnpm refuses to add to a workspace root unless -w makes it explicit.
+      return `pnpm add -D${options.pnpmWorkspaceRoot ? " -w" : ""} ${packageName}`;
     case "yarn":
       return `yarn add -D ${packageName}`;
     case "bun":

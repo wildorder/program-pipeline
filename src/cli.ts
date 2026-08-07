@@ -8,6 +8,7 @@ import { buildProgram } from "./build-program.js";
 import {
   addDevDependencyCommand,
   detectPackageManager,
+  isPnpmWorkspaceRoot,
   PACKAGE_MANAGERS,
   parsePackageManager,
 } from "./detect-package-manager.js";
@@ -155,7 +156,9 @@ program
         const exitCode = await new Promise<number>(
           (resolvePromise, rejectPromise) => {
             const child = spawn(
-              addDevDependencyCommand(manager, "@wildorder/program-pipeline"),
+              addDevDependencyCommand(manager, "@wildorder/program-pipeline", {
+                pnpmWorkspaceRoot: isPnpmWorkspaceRoot(root),
+              }),
               { cwd: root, shell: true, stdio: "inherit", windowsHide: true },
             );
             child.on("error", rejectPromise);

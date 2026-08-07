@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   addDevDependencyCommand,
   detectPackageManager,
+  isPnpmWorkspaceRoot,
   parsePackageManager,
 } from "../src/detect-package-manager.js";
 
@@ -101,5 +102,24 @@ describe("addDevDependencyCommand", () => {
     ["bun", "bun add -d pkg"],
   ] as const)("maps %s to its add command", (manager, command) => {
     expect(addDevDependencyCommand(manager, "pkg")).toBe(command);
+  });
+
+  it("adds -w for pnpm at a workspace root", () => {
+    expect(
+      addDevDependencyCommand("pnpm", "pkg", { pnpmWorkspaceRoot: true }),
+    ).toBe("pnpm add -D -w pkg");
+    expect(
+      addDevDependencyCommand("npm", "pkg", { pnpmWorkspaceRoot: true }),
+    ).toBe("npm install --save-dev pkg");
+  });
+});
+
+describe("isPnpmWorkspaceRoot", () => {
+  it("is true only when pnpm-workspace.yaml exists", async () => {
+    const root = await temporaryRoot();
+    expect(isPnpmWorkspaceRoot(root)).toBe(false);
+
+    await writeFile(join(root, "pnpm-workspace.yaml"), "packages:\n");
+    expect(isPnpmWorkspaceRoot(root)).toBe(true);
   });
 });

@@ -99,6 +99,12 @@ The runner performs, per workstream:
 
 A failed workstream stops the build with a nonzero exit code.
 
+The runner also owns the program-level status in the manifest: `planning` →
+`in_progress` when execution starts, then `complete` when every workstream
+is complete or `failed` when the build stops on a failure (a successful
+resume flips it back to `complete`). Do not edit program or workstream
+statuses by hand.
+
 Two failure modes resolve themselves on re-run — recognize them instead of
 debugging the workstream:
 

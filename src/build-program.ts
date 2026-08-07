@@ -311,6 +311,17 @@ async function writeWorkstreamStatus(
   await writeFile(manifestPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
 }
 
+async function writeProgramStatus(
+  manifestPath: string,
+  status: "in_progress" | "complete" | "failed",
+): Promise<void> {
+  const raw = JSON.parse(await readFile(manifestPath, "utf8")) as {
+    program?: { status?: string };
+  };
+  if (raw.program) raw.program.status = status;
+  await writeFile(manifestPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+}
+
 function resolveAgent(config: PipelineConfig): AgentConfig | undefined {
   if (config.agent) return config.agent;
   const command = process.env.PROGRAM_PIPELINE_AGENT_COMMAND;
@@ -526,6 +537,7 @@ export async function buildProgram(
     agentCommand: agent.command,
     verify: Object.keys(verifyCommands),
   });
+  await writeProgramStatus(manifestPath, "in_progress");
 
   // Tree signatures captured before each workstream's first-ever attempt,
   // persisted across runs. They let the no-op guard distinguish an agent
@@ -643,6 +655,7 @@ export async function buildProgram(
           await emit("agent-error", { id: workstream.id, attempt: attempts, message });
           progress(`${workstream.id} agent failed to start: ${message}`);
           await writeWorkstreamStatus(manifestPath, workstream.id, "failed");
+          await writeProgramStatus(manifestPath, "failed");
           outcomes.push({
             id: workstream.id,
             status: "failed",
@@ -710,6 +723,7 @@ export async function buildProgram(
               `${workstream.id} agent environment failure: exited ${agentResult.exitCode} in ${minutesSince(attemptStartMs)} with no changes; build stopped`,
             );
             await writeWorkstreamStatus(manifestPath, workstream.id, "failed");
+            await writeProgramStatus(manifestPath, "failed");
             outcomes.push({
               id: workstream.id,
               status: "failed",
@@ -866,6 +880,7 @@ export async function buildProgram(
       });
     } else {
       await writeWorkstreamStatus(manifestPath, workstream.id, "failed");
+      await writeProgramStatus(manifestPath, "failed");
       await emit("workstream-failed", {
         id: workstream.id,
         attempts,
@@ -894,6 +909,7 @@ export async function buildProgram(
     }
   }
 
+  await writeProgramStatus(manifestPath, "complete");
   await emit("build-complete", {
     programId: options.programId,
     workstreams: outcomes.length,

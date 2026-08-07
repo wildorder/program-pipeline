@@ -132,6 +132,13 @@ async function manifestStatuses(root: string): Promise<Record<string, string>> {
   );
 }
 
+async function programStatus(root: string): Promise<string> {
+  const manifest = JSON.parse(
+    await readFile(join(root, "docs", "programs", "alpha-manifest.json"), "utf8"),
+  ) as { program: { status: string } };
+  return manifest.program.status;
+}
+
 const pass = async (): Promise<CommandResult> => ({ exitCode: 0, output: "ok" });
 
 function initGitRepo(root: string): void {
@@ -194,6 +201,7 @@ describe("buildProgram", () => {
       "WS-01": "complete",
       "WS-02": "complete",
     });
+    await expect(programStatus(root)).resolves.toBe("complete");
 
     expect(report.eventsPath).toBeDefined();
     const events = (await readFile(report.eventsPath as string, "utf8"))
@@ -553,6 +561,7 @@ describe("buildProgram", () => {
       "WS-01": "failed",
       "WS-02": "not_started",
     });
+    await expect(programStatus(root)).resolves.toBe("failed");
   });
 
   it("reports live progress lines for key events", async () => {
@@ -605,6 +614,7 @@ describe("buildProgram", () => {
       expect.objectContaining({ id: "WS-01", action: "skip" }),
       expect.objectContaining({ id: "WS-02", action: "run" }),
     ]);
+    await expect(programStatus(root)).resolves.toBe("complete");
   });
 
   it("requires approval when the config demands it and runs nothing", async () => {
@@ -627,6 +637,7 @@ describe("buildProgram", () => {
       "WS-01": "not_started",
       "WS-02": "not_started",
     });
+    await expect(programStatus(root)).resolves.toBe("planning");
   });
 
   it("returns the plan without executing on --dry-run", async () => {
@@ -643,6 +654,7 @@ describe("buildProgram", () => {
     expect(report.result).toBe("PLANNED");
     expect(report.plan.map(({ id }) => id)).toEqual(["WS-01", "WS-02"]);
     expect(report.agent).toBe("fake-agent --model sonnet");
+    await expect(programStatus(root)).resolves.toBe("planning");
   });
 
   it("surfaces the resolved agent at the approval gate", async () => {

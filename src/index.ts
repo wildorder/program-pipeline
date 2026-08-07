@@ -14,6 +14,13 @@ export {
   type WorkstreamOutcome,
 } from "./build-program.js";
 export {
+  addDevDependencyCommand,
+  detectPackageManager,
+  PACKAGE_MANAGERS,
+  parsePackageManager,
+  type PackageManager,
+} from "./detect-package-manager.js";
+export {
   findCycles,
   stableTopologicalOrder,
   type GraphNode,

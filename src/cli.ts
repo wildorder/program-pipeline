@@ -5,6 +5,12 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { buildProgram } from "./build-program.js";
+import {
+  addDevDependencyCommand,
+  detectPackageManager,
+  PACKAGE_MANAGERS,
+  parsePackageManager,
+} from "./detect-package-manager.js";
 import { initProject } from "./init-project.js";
 import {
   DEFAULT_TARGETS,
@@ -124,17 +130,32 @@ program
     DEFAULT_TARGETS,
   )
   .option("--force", "Overwrite conflicting skill files", false)
+  .option(
+    "--pm <manager>",
+    `Package manager for the devDependency: ${PACKAGE_MANAGERS.join(", ")} (default: detected from the repository)`,
+  )
   .action(
-    async (options: { cwd: string; targets: string; force: boolean }) => {
+    async (options: {
+      cwd: string;
+      targets: string;
+      force: boolean;
+      pm?: string;
+    }) => {
       const root = resolve(options.cwd);
       const targets: SkillTarget[] = parseTargets(options.targets);
 
       if (existsSync(join(root, "package.json"))) {
-        console.log("adding @wildorder/program-pipeline as a devDependency");
+        const manager =
+          options.pm === undefined
+            ? detectPackageManager(root)
+            : parsePackageManager(options.pm);
+        console.log(
+          `adding @wildorder/program-pipeline as a devDependency with ${manager}`,
+        );
         const exitCode = await new Promise<number>(
           (resolvePromise, rejectPromise) => {
             const child = spawn(
-              "npm install --save-dev @wildorder/program-pipeline",
+              addDevDependencyCommand(manager, "@wildorder/program-pipeline"),
               { cwd: root, shell: true, stdio: "inherit", windowsHide: true },
             );
             child.on("error", rejectPromise);
@@ -143,7 +164,7 @@ program
         );
         if (exitCode !== 0) {
           console.error(
-            "npm install failed; skills were not installed. Fix the npm error and re-run setup.",
+            `${manager} install failed; skills were not installed. Fix the ${manager} error and re-run setup (use --pm to override the detected package manager).`,
           );
           process.exitCode = 1;
           return;

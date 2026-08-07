@@ -46,6 +46,12 @@ devDependency (skipped with a warning when no `package.json` exists) and then
 runs the skills installer. Accepts the same `--targets` and `--force` options
 as `install`.
 
+The devDependency is added with the project's own package manager, detected
+from the `packageManager` field in `package.json` and then from the lockfile
+(`pnpm-lock.yaml`, `yarn.lock`, `bun.lockb`/`bun.lock`, `package-lock.json`),
+walking up from `--cwd` so workspace packages resolve to the repo root's
+manager. Falls back to npm; override detection with `--pm <npm|pnpm|yarn|bun>`.
+
 Re-running `setup` is also the update path: it bumps the dependency to the
 latest published version and refreshes all unmodified package-generated
 skills to match, leaving hand-edited skills untouched (reported as
@@ -55,6 +61,7 @@ should instead use `npm update` plus `npm exec program-pipeline -- install`.
 ```sh
 npx @wildorder/program-pipeline setup
 npx @wildorder/program-pipeline setup --targets claude
+npx @wildorder/program-pipeline setup --pm pnpm
 ```
 
 ### `init`

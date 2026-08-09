@@ -3,6 +3,7 @@ export {
   defaultVerifyRunner,
   describeAgent,
   resolveAgent,
+  resolveAuthorAgent,
   resolveValidatorAgent,
   runProcess,
   sanitizedEnvironment,
@@ -10,6 +11,7 @@ export {
   type AgentInvocation,
   type AgentRunner,
   type CommandResult,
+  type ResolvedAuthorAgent,
   type VerifyRunner,
 } from "./agent-runner.js";
 export {
@@ -87,6 +89,7 @@ export {
   validateLoop,
   type Disagreement,
   type LoopOutcome,
+  type ResolvedAgents,
   type RoundRecord,
   type ValidateLoopOptions,
   type ValidateLoopResult,

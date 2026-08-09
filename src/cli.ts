@@ -303,6 +303,11 @@ program
       } else {
         const counts = countBySeverity(result.findings);
         console.log(`\n${result.result} (${result.outcome}): ${result.programId}`);
+        if (result.agents) {
+          console.log(
+            `author: ${result.agents.author} | validator: ${result.agents.validator}`,
+          );
+        }
         if (result.reason) console.log(result.reason);
         console.log(
           `blocker=${counts.blocker} major=${counts.major} minor=${counts.minor} advisory=${counts.advisory}`,

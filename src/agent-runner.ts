@@ -130,6 +130,34 @@ export function resolveAgent(config: PipelineConfig): AgentConfig | undefined {
   return undefined;
 }
 
+export interface ResolvedAuthorAgent {
+  agent: AgentConfig;
+  /**
+   * True when no `authorAgent` was configured and the build agent was
+   * borrowed. Callers must surface this: the build agent is frequently set to
+   * a cheap model on purpose, and silently promoting it to spec critic puts
+   * that model in charge of judging and rewriting specs a stronger model
+   * authored.
+   */
+  borrowedBuildAgent: boolean;
+}
+
+/**
+ * The agent that reasons about specs in the convergence loop. Prefers the
+ * dedicated `authorAgent` block and falls back to the build agent only as a
+ * last resort, reporting that it did.
+ */
+export function resolveAuthorAgent(
+  config: PipelineConfig,
+): ResolvedAuthorAgent | undefined {
+  if (config.authorAgent) {
+    return { agent: config.authorAgent, borrowedBuildAgent: false };
+  }
+  const build = resolveAgent(config);
+  if (build) return { agent: build, borrowedBuildAgent: true };
+  return undefined;
+}
+
 /**
  * The validator agent for cross-provider critique. Unlike {@link resolveAgent}
  * this never falls back to the build agent: a validator that is the same

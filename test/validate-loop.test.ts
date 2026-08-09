@@ -33,7 +33,10 @@ None.
 `;
 
 async function project(
-  overrides: { validate?: Record<string, unknown> } = {},
+  overrides: {
+    validate?: Record<string, unknown>;
+    authorAgent?: Record<string, unknown> | null;
+  } = {},
 ): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "program-pipeline-loop-"));
   temporaryRoots.push(root);
@@ -46,7 +49,15 @@ async function project(
       pipelineVersion: "0.7.0",
       visionPath: "docs/vision.md",
       requireApprovalBeforeBuild: false,
-      agent: { command: "author-cli", args: ["-p"] },
+      agent: { command: "build-cli", args: ["-p", "--model", "cheap"] },
+      ...(overrides.authorAgent === null
+        ? {}
+        : {
+            authorAgent: overrides.authorAgent ?? {
+              command: "author-cli",
+              args: ["-p"],
+            },
+          }),
       validatorAgent: { command: "critic-cli", args: ["exec"] },
       ...(overrides.validate ? { validate: overrides.validate } : {}),
     }),
@@ -419,6 +430,51 @@ describe("convergence loop", () => {
       agentRunner: runner,
     });
     expect(result.rounds.length).toBeLessThanOrEqual(3);
+  });
+
+  it("runs the spec loop on authorAgent, never the cheap build agent", async () => {
+    const root = await project();
+    const { runner, calls } = recorder([
+      criticReply([{}]),
+      writerReply([idOf({})]),
+    ]);
+    const result = await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      rounds: 1,
+      agentRunner: runner,
+    });
+    expect(calls.map(({ command }) => command)).not.toContain("build-cli");
+    expect(result.agents?.author).toBe("author-cli -p");
+    expect(result.agents?.borrowedBuildAgent).toBe(false);
+  });
+
+  it("warns loudly when it has to borrow the build agent for spec critique", async () => {
+    const root = await project({ authorAgent: null });
+    const lines: string[] = [];
+    const { runner } = recorder(['```json\n{"findings":[]}\n```']);
+    const result = await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: runner,
+      onProgress: (line) => lines.push(line),
+    });
+    expect(result.agents?.borrowedBuildAgent).toBe(true);
+    expect(result.agents?.author).toBe("build-cli -p --model cheap");
+    expect(lines.join("\n")).toContain("WARNING: no authorAgent configured");
+  });
+
+  it("names both resolved agents before spending anything", async () => {
+    const root = await project();
+    const lines: string[] = [];
+    const { runner } = recorder(['```json\n{"findings":[]}\n```']);
+    await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: runner,
+      onProgress: (line) => lines.push(line),
+    });
+    expect(lines[0]).toBe("agents: author author-cli -p, validator critic-cli exec");
   });
 
   it("aborts rather than running critic and writer as the same model", async () => {

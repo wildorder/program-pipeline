@@ -29,7 +29,16 @@ export const pipelineConfigSchema = z.object({
     ),
   visionPath: z.string().min(1),
   requireApprovalBeforeBuild: z.boolean(),
+  /** Implements workstreams. A cheaper model is often the right call here. */
   agent: agentSchema.optional(),
+  /**
+   * Reasons about specs in the convergence loop. Distinct from `agent`:
+   * implementing a spec and judging one want different models, and borrowing
+   * the build agent silently put a cheap model in charge of critiquing and
+   * rewriting expensively authored specs.
+   */
+  authorAgent: agentSchema.optional(),
+  /** The independent second opinion: spec loop critic and test critique. */
   validatorAgent: agentSchema.optional(),
   models: z.record(z.string(), z.string().min(1)).default({}),
   verify: z.record(z.string(), z.string().min(1)).default({}),

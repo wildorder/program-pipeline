@@ -46,14 +46,21 @@ validate and wait for the answer.
 
 ## Step 2 — Confirm the loop can run
 
-The loop needs two agents configured in `pipeline.config.json`: `agent` and
-`validatorAgent`. Critic and writer roles alternate between them, so neither
-model ever grades its own writing. If either is missing, the runner aborts —
-show the user what to add and wait.
+The loop needs two agents configured in `pipeline.config.json`: `authorAgent`
+and `validatorAgent`. Critic and writer roles alternate between them, so
+neither model ever grades its own writing. If `validatorAgent` is missing, the
+runner aborts — show the user what to add and wait.
 
-State which agent fills which role before starting, so the user can object
-first. Roles swap every round: the validator agent critiques round 1, the
-build agent critiques round 2, and so on.
+`authorAgent` is **not** `agent`. `agent` builds workstreams and is often set
+to a cheaper model on purpose; that model should not be critiquing and
+rewriting specs a stronger model authored. If `authorAgent` is absent the
+runner borrows the build agent and prints a warning — surface that warning to
+the user as a configuration problem rather than passing over it.
+
+The runner names both resolved agents in its first line of output. Report that
+line, so the user can object before any tokens are spent. Roles swap every
+round: the validator critiques round 1, the author critiques round 2, and so
+on.
 
 When an agent CLI reports a configured model as unavailable, obsolete, or
 renamed, propose the current equivalent, update `pipeline.config.json` after
@@ -174,7 +181,8 @@ Report:
 
 1. **Gate result** — `PASSED` or `FAILED`.
 2. **Loop outcome** — converged, cap-reached, requires-replan, or aborted,
-   with the round count and which agent held which role.
+   with the round count and which agent held which role. Say explicitly if the
+   build agent was borrowed for lack of an `authorAgent`.
 3. **Finding counts** — blocker, major, minor, advisory.
 4. **Findings** — ordered by severity, with workstream ID, file, and lines.
 5. **Open disagreements** — findings the writer declined and the critic

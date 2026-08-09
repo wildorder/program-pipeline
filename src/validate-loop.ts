@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import {
   defaultAgentRunner,
   describeAgent,
-  resolveAgent,
+  resolveAuthorAgent,
   resolveValidatorAgent,
   tail,
   type AgentRunner,
@@ -67,12 +67,21 @@ export interface RoundRecord {
   rejected: number;
 }
 
+/** Which agent held which role, so the choice is visible without reading source. */
+export interface ResolvedAgents {
+  author: string;
+  validator: string;
+  /** No `authorAgent` was configured, so the build agent was borrowed. */
+  borrowedBuildAgent: boolean;
+}
+
 export interface ValidateLoopResult {
   programId: string;
   outcome: LoopOutcome;
   /** The gate verdict, decided independently of why the loop stopped. */
   result: "PASSED" | "FAILED";
   reason?: string;
+  agents?: ResolvedAgents;
   strict: boolean;
   rounds: RoundRecord[];
   findings: IdentifiedFinding[];
@@ -285,14 +294,34 @@ export async function validateLoop(
     MAX_VALIDATE_ROUNDS,
   );
 
-  const primary = resolveAgent(config);
+  // The spec loop runs `authorAgent`, not the build agent. Implementing a
+  // workstream and judging a spec want different models, and the build agent
+  // is often deliberately cheap.
+  const author = resolveAuthorAgent(config);
   const secondary = resolveValidatorAgent(config);
-  if (!primary || !secondary) {
+  if (!author || !secondary) {
     return aborted(
       options.programId,
-      !primary
-        ? "No `agent` configured in pipeline.config.json; the convergence loop needs two agents so critic and writer are never the same model."
+      !author
+        ? "No `authorAgent` or `agent` configured in pipeline.config.json; the convergence loop needs two agents so critic and writer are never the same model."
         : "No `validatorAgent` configured in pipeline.config.json; the convergence loop needs two agents so critic and writer are never the same model.",
+    );
+  }
+  const primary = author.agent;
+
+  const agents: ResolvedAgents = {
+    author: describeAgent(primary),
+    validator: describeAgent(secondary),
+    borrowedBuildAgent: author.borrowedBuildAgent,
+  };
+  // State the roles before spending anything, so an unintended model is
+  // caught by reading the output rather than by reading the source.
+  progress(
+    `agents: author ${agents.author}, validator ${agents.validator}`,
+  );
+  if (author.borrowedBuildAgent) {
+    progress(
+      `WARNING: no authorAgent configured; borrowing the build agent (${agents.author}) to critique and rewrite specs. The build agent is often set to a cheaper model than the one that authored them — set authorAgent in pipeline.config.json.`,
     );
   }
 
@@ -496,6 +525,7 @@ export async function validateLoop(
     outcome,
     result: gateFailed ? "FAILED" : "PASSED",
     ...(reason === undefined ? {} : { reason }),
+    agents,
     strict,
     rounds,
     findings: sortBySeverity(combined) as IdentifiedFinding[],

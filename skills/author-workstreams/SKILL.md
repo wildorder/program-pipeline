@@ -29,8 +29,10 @@ current host offers and state the mapping (for example "author `opus-5` →
 host-neutral so every host and teammate can resolve it.
 
 **Validation is not yours to configure.** The packaged runner resolves the
-critic and writer from the `agent` and `validatorAgent` blocks and composes
-their briefs itself. You do not pick the validator, pipe it context, or tell
+critic and writer from the `authorAgent` and `validatorAgent` blocks and
+composes their briefs itself. Note that `models.author` governs only in-host
+authoring — it does not reach the runner, so a strong `models.author` with no
+`authorAgent` configured still leaves the loop running the build agent. You do not pick the validator, pipe it context, or tell
 it what to weigh — that seam is how "ignore length, ignore file counts"
 instructions used to reach a supposedly independent validator and quietly
 narrow the gate. Report which agents the runner names for each role so the

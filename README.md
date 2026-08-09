@@ -143,6 +143,7 @@ Configure the runner in `pipeline.config.json`:
 ```json
 {
   "agent": { "command": "claude", "args": ["-p", "--model", "sonnet"], "promptMode": "stdin" },
+  "authorAgent": { "command": "claude", "args": ["-p", "--model", "opus"], "promptMode": "stdin" },
   "validatorAgent": { "command": "codex", "args": ["exec"] },
   "models": { "author": "claude-code/opus", "validator": "gpt-sol" },
   "verify": { "build": "npm run build", "test": "npm test" },
@@ -201,9 +202,19 @@ npm exec program-pipeline -- converge phase-1 --rounds 3 --strict
 
 Each round pairs one **critic**, which reports findings and never edits, with
 one **writer**, which applies fixes and may decline any finding it believes is
-wrong. The roles alternate between the `agent` and `validatorAgent` blocks, so
-neither model ever grades its own writing — a critic allowed to fix tends to
-stop finding, converging on its own taste rather than on quality.
+wrong. The roles alternate between the `authorAgent` and `validatorAgent`
+blocks, so neither model ever grades its own writing — a critic allowed to fix
+tends to stop finding, converging on its own taste rather than on quality.
+
+Note that the loop runs `authorAgent`, **not** `agent`. Building a workstream
+and judging a spec are different jobs: `agent` is frequently set to a cheaper
+model on purpose, and that model has no business critiquing and rewriting
+specs a stronger one authored. With no `authorAgent` configured the loop falls
+back to the build agent and says so loudly in its output — treat that warning
+as a configuration bug, not a note.
+
+The loop names both resolved agents before it spends anything, so an
+unintended model shows up in the first line of output.
 
 The runner composes both briefs itself. That is the point of putting the loop
 in the package rather than in a skill: when an orchestrating agent assembled
@@ -238,17 +249,29 @@ evidence warrants, it just has to say why. "WS-04 is 800 lines" is set aside;
 "WS-04 bundles auth and telemetry, split at step 12" and "lines 210-340
 restate the program doc verbatim" keep full severity and stay actionable.
 
-Model roles are explicit, not implicit: the `agent` block is the single
-source of truth for what builds each workstream (the runner prints the
-resolved agent line in dry-run, approval, and build output), and
-`validatorAgent` is the independent second opinion used by the convergence
-loop and by build-time test critique. `models` declares host-neutral intent
-for the workflows that select a model in-host.
+### The three agent roles
 
-`validatorAgent` declares the invocation mechanism — command, base args,
-prompt mode — and the runner passes its args verbatim, exactly as it does for
-`agent`. A model flag for that CLI belongs there, spelled the way the CLI
-expects.
+Model roles are explicit, not implicit. Three separate blocks, because three
+separate jobs:
+
+| Block | Job | Used by |
+| --- | --- | --- |
+| `agent` | Implements workstreams. A cheaper model is usually the right call. | `build` |
+| `authorAgent` | Reasons about specs — critic and writer in the loop. | `converge` |
+| `validatorAgent` | The independent second opinion. | `converge`, test critique |
+
+Each block declares an invocation mechanism — command, base args, prompt mode
+— and the runner passes the args verbatim. A model flag for that CLI belongs
+there, spelled the way the CLI expects.
+
+Test critique stays on `validatorAgent` deliberately: it reviews code the
+build agent wrote, so the independent reviewer is the point.
+
+`models` is a different mechanism and does not reach the runner. It declares
+**host-neutral intent** for workflows that switch models *in-host* (the
+authoring skill, for example). The runner spawns processes and needs a
+concrete command, so `models.author: opus-5` has no effect on `converge` —
+that is what `authorAgent` is for.
 
 **Model names.** The pipeline has no model registry; every name belongs to
 the namespace of the tool that consumes it. Args in `agent` and

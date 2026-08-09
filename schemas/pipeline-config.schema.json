@@ -38,10 +38,25 @@
         "promptMode": { "enum": ["stdin", "argument"] }
       }
     },
+    "authorAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "description": "Reasons about specs in the convergence loop. Separate from `agent`, because implementing a spec and judging one want different models; without it the loop borrows the build agent, which is often deliberately cheap.",
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "promptMode": { "enum": ["stdin", "argument"] }
+      }
+    },
     "validatorAgent": {
       "type": "object",
       "additionalProperties": false,
       "required": ["command"],
+      "description": "The independent second opinion: critic in the spec convergence loop, and reviewer for build-time test critique.",
       "properties": {
         "command": { "type": "string", "minLength": 1 },
         "args": {

@@ -70,7 +70,32 @@
         "maxRecoveryAttempts": { "type": "integer", "minimum": 0 },
         "verifyRetries": { "type": "integer", "minimum": 0 },
         "logDir": { "type": "string", "minLength": 1 },
-        "commit": { "type": "boolean" }
+        "commit": { "type": "boolean" },
+        "critiqueTests": {
+          "type": "boolean",
+          "description": "Have the validator agent critique the workstream diff's tests before the runner commits. A passing suite proves little when the same agent wrote both the implementation and its tests."
+        }
+      }
+    },
+    "validate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rounds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3,
+          "description": "Rounds of the author/critic convergence loop; 1 reproduces the pre-loop single-critique behavior."
+        },
+        "strict": {
+          "type": "boolean",
+          "description": "Fail the gate on major findings, not just blockers. Independent of loop termination, which always tracks blockers and majors."
+        },
+        "scopeDownAfterRound": {
+          "type": "integer",
+          "minimum": 2,
+          "description": "Rounds through this number always cover the whole program. Scoping earlier would use the declared dependency graph to pick which workstreams to re-check, but finding undeclared dependencies is part of the job."
+        }
       }
     }
   }

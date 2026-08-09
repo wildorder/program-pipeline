@@ -1,16 +1,23 @@
 export {
-  buildProgram,
   defaultAgentRunner,
   defaultVerifyRunner,
+  describeAgent,
+  resolveAgent,
+  resolveValidatorAgent,
+  runProcess,
   sanitizedEnvironment,
+  tail,
   type AgentInvocation,
   type AgentRunner,
+  type CommandResult,
+  type VerifyRunner,
+} from "./agent-runner.js";
+export {
+  buildProgram,
   type BuildOutcome,
   type BuildProgramOptions,
   type BuildProgramResult,
-  type CommandResult,
   type PlanEntry,
-  type VerifyRunner,
   type WorkstreamOutcome,
 } from "./build-program.js";
 export {
@@ -53,10 +60,48 @@ export {
   type Workflow,
 } from "./install-skills.js";
 export {
+  at,
+  because,
+  countBySeverity,
+  fingerprint,
+  FINDING_CATEGORIES,
+  haltsConvergence,
+  isGateFailing,
+  measured,
+  sortBySeverity,
+  type Evidence,
+  type Finding,
+  type FindingCategory,
+  type Severity,
+} from "./findings.js";
+export {
+  applySeverityPolicy,
+  citesCause,
+  summarizePolicy,
+  type PolicySummary,
+} from "./severity-policy.js";
+export {
+  extractJson,
+  parseCriticFindings,
+  parseWriterVerdict,
+  validateLoop,
+  type Disagreement,
+  type LoopOutcome,
+  type RoundRecord,
+  type ValidateLoopOptions,
+  type ValidateLoopResult,
+  type WriterVerdict,
+} from "./validate-loop.js";
+export {
+  composeCriticBrief,
+  composeWriterBrief,
+  loadBriefSources,
+  type BriefSources,
+  type RoundContext,
+} from "./validator-brief.js";
+export {
   SPEC_CONTRACT,
   validateWorkstreams,
   type CoverageEntry,
-  type Finding,
-  type Severity,
   type ValidationReport,
 } from "./validate.js";

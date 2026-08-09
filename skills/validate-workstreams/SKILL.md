@@ -1,166 +1,197 @@
 ---
 name: validate-workstreams
-description: Validate a program's workstream specifications for completeness, consistency, traceability, and build readiness. Use when a user asks to validate or gate workstreams before review or execution.
-argument-hint: "[program-id] [--fix] [--strict] [--validator-model <model>] [--report-json]"
+description: Validate a program's workstream specifications for completeness, consistency, traceability, test quality, and build readiness. Use when a user asks to validate or gate workstreams before review or execution.
+argument-hint: "[program-id] [--rounds <n>] [--strict] [--report-json]"
 disable-model-invocation: true
 ---
 
 # Validate Workstreams
 
-Validate a program's workstream specs for completeness, consistency, and build readiness.
+Validate a program's workstream specs for completeness, consistency, test
+quality, and build readiness.
 
-## Execution defaults and overrides
+## How this workflow runs
 
-Default behavior:
+The packaged runner owns validation. Your job is to invoke it, read what it
+returns, and report — **not** to compose the validator's instructions, decide
+what it should ignore, or re-adjudicate its findings.
 
-- Run as a hard gate and return `PASSED` or `FAILED`.
-- Perform validation in an isolated validator role when the host supports delegated agents; otherwise perform the same checks directly.
-- Treat `blocker` findings as gate failures.
+That separation is deliberate. When the orchestrating agent hand-assembled the
+prompt for the external validator, it folded in its own framing — "ignore
+length", "don't worry about file counts" — which narrowed the critique before
+it started and produced passes that looked more thorough than they were. The
+runner now builds the brief from the program's own files plus a fixed criteria
+block. Do not attempt to supplement it.
 
-Parse these optional flags from the invocation arguments:
+Run:
 
-- `--fix` — apply focused edits for clear issues, then re-run validation once.
-- `--strict` — fail on `major` findings too.
-- `--validator-model <model>` — use the requested validator model when the host supports model selection.
-- `--report-json` — include a machine-readable JSON block with findings.
+```sh
+npm exec program-pipeline -- converge "{program-id}"
+```
 
-When no `--validator-model` flag is given, default to `models.validator` from
-`pipeline.config.json` when the host can run it; when it cannot, fall back to
-the `validatorAgent` command from the config, run as a separate process with
-the validation instructions and all context piped to it. `models.validator`
-is host-neutral intent — resolve it to the nearest concrete model the host
-offers (or, for the external mechanism, to a model identifier the external
-CLI accepts, passed via that CLI's model flag), state the mapping, and never
-rewrite the config with host-specific slugs or hardcode a model flag into
-`validatorAgent.args`. State which model is
-validating and which mechanism runs it (in-host or external agent). If the
-requested validator model is unavailable through both mechanisms, stop and
-ask the user to choose a supported model.
+Add `--rounds <n>` (maximum 3) or `--strict` when the user asks. Use
+`--json` when you need the machine-readable result. A nonzero exit is an
+expected gate result, not a tool failure.
 
-When a configured model name is reported unavailable, obsolete, or renamed,
-propose the current equivalent, update `pipeline.config.json` after the user
-approves, and retry — never hand-patch model names into skill files.
-
-If the validator fails for operational reasons — cost or usage limits, rate
-limiting, authentication — stop at the first failure and report the error
-and options. Never silently validate with a different model than configured;
-same-model validation requires the user's explicit approval.
-
-## Step 1 — Identify the program
-
-Use the supplied program ID. If none was provided, ask which program to validate and wait for the answer.
-
-## Step 2 — Load context
-
-Read all of these files:
-
-- The vision document at `visionPath` from `pipeline.config.json`; use `docs/vision.md` only when no configuration exists
-- `docs/programs/{program-id}-program.md`
-- `docs/programs/{program-id}-manifest.json`
-- Every file in `tasks/{program-id}/`
-- `docs/as-built.md`, if it exists
-- `AGENTS.md`
-- Every document listed in `contextDocs` from `pipeline.config.json`, when present
-
-## Step 3 — Run deterministic validation
-
-Run the package validator first:
+For a mechanical-only check with no agents involved:
 
 ```sh
 npm exec program-pipeline -- validate "{program-id}" --json
 ```
 
-Add `--strict` when requested. Preserve its findings as the mechanical
-baseline. A nonzero exit is an expected gate result, not a tool failure. If
-the package command is unavailable, perform the same blocker checks directly
-and state that deterministic validation could not run.
+## Step 1 — Identify the program
 
-The package validator owns the spec contract: required section names,
-`SC-xx`/`WS-xx` ID formats, and `(NEW)`/`(MODIFY)` annotations. Never
-contradict its findings with a different interpretation of the format.
+Use the supplied program ID. If none was provided, ask which program to
+validate and wait for the answer.
 
-## Step 4 — Build a validation matrix
+## Step 2 — Confirm the loop can run
 
-Construct:
+The loop needs two agents configured in `pipeline.config.json`: `agent` and
+`validatorAgent`. Critic and writer roles alternate between them, so neither
+model ever grades its own writing. If either is missing, the runner aborts —
+show the user what to add and wait.
 
-1. A program success-criteria list. Assign stable IDs `SC-01`, `SC-02`, and so on when IDs are missing.
-2. A workstream inventory from the manifest: `id`, `dependencies`, `taskFile`, and `packages`.
-3. A spec inventory from `tasks/{program-id}/`: `Dependencies`, `Files Touched`, `Tests`, `Acceptance Criteria`, and `Traceability`.
+State which agent fills which role before starting, so the user can object
+first. Roles swap every round: the validator agent critiques round 1, the
+build agent critiques round 2, and so on.
 
-## Step 5 — Run semantic checks and assign severity
+When an agent CLI reports a configured model as unavailable, obsolete, or
+renamed, propose the current equivalent, update `pipeline.config.json` after
+the user approves, and retry. Never hand-patch model names into skill files.
 
-Classify every finding as `blocker`, `major`, or `minor`.
+If an agent fails for operational reasons — cost or usage limits, rate
+limiting, authentication — the runner aborts at the first failure. Report the
+error and the options; never report a pass that did not happen, and never
+substitute a different model without the user's explicit approval.
 
-### Blocker checks
+## How the loop works
 
-- Missing or unreadable spec files referenced in the manifest.
-- Any success criterion with zero workstream coverage.
-- Any workstream with zero traceability mapping.
-- Dependency references to non-existent workstream IDs.
-- Cycles in the dependency graph.
-- Missing `Files Touched` annotations `(NEW)` or `(MODIFY)` on bulleted file
-  entries. A short note after the keyword is allowed (`(MODIFY — extend
-  props)`), and non-bullet lines are commentary, not file entries.
+Each round has one critic and one writer. The critic reports findings and
+**never edits**; the writer applies fixes and may decline any finding it
+believes is wrong. Then the roles swap. A critic that is also allowed to fix
+tends to stop finding — it converges on its own taste rather than on quality.
 
-### Major checks
+**Rounds 1 and 2 always cover the whole program.** Scoping to changed
+workstreams is permitted only from round 3. Earlier scoping would use the
+declared dependency graph to choose what to re-check, but finding *undeclared*
+dependencies is part of the job: a workstream that silently consumes another's
+output is not in the producer's neighbor set, so scoping would hide exactly
+the defect being hunted.
 
-- Contradictory interfaces or assumptions across workstreams.
-- Missing dependency declarations inferred from cross-workstream references.
-- Tests that do not specify scenario, expected behavior, and assertion target.
-- Acceptance criteria that are not objectively verifiable.
-- Manifest packages that no workstream touches.
+The loop ends in one of four states:
 
-### Minor checks
+- **converged** — a round produced no new blocker or major findings.
+- **cap-reached** — the round cap ran out with findings still open. Majors are
+  the largest and most subjective class, so this is a normal outcome, not a
+  failure.
+- **requires-replan** — a structural defect no spec edit can fix (a workstream
+  that must split, a missing workstream, a manifest ordering that is itself
+  wrong). The loop stops immediately rather than spending rounds polishing a
+  spec that should not exist in that shape. Refer the user back to
+  `plan-program`.
+- **aborted** — the loop could not run.
 
-- Ambiguous wording, unclear sequencing, or weak context-file lists.
-- Optional quality improvements such as naming consistency or sharper scope boundaries.
-- **Redundant prose**: paragraphs copied from the program document, repeated explanations across sections, or narrative that does not help a build agent execute. Cite the redundant section.
-- **Mixed concerns**: unrelated features in one workstream. Raise to `major` only when this would clearly prevent completion in one build session.
-- **File count or session fit**: about eight core files is the sweet spot. Ignore `__tests__` companions and barrel `index.ts` re-exports. Trust manifest sizing from the program-planning workflow unless evidence shows the workstream cannot finish in one agentic session. Flag file count only when unrelated concerns are bundled or the core-file count is likely to exhaust context or turns.
+How the loop stopped and whether the gate passed are **separate questions**.
+The gate is decided by the deterministic validator over the final tree: a run
+that converged still fails if a blocker survived it, and a run that hit its
+cap still passes if everything left open is advisory. `--strict` controls
+whether majors fail the gate; it does not affect loop termination, which
+always tracks blockers and majors.
 
-### Scope advisory
+## Severity is decided by policy, not by prompt
 
-Emit at most one advisory `minor` per workstream, and only when both conditions are true:
+Findings carry evidence, and the runner's policy layer decides severity from
+it. The rule is **cause-required**: a finding keeps its severity only when it
+cites a locatable cause — a file and line range, or a named concern. A finding
+supported only by a measurement (line count, file count) is downgraded to
+`advisory`, which never fails the gate and never keeps the loop running.
 
-- The spec is very long, for example more than 500 lines.
-- `Files Touched` names more than about ten core files, using the exclusions above.
+This is the opposite of suppression. Length and file count are symptoms, never
+defects in themselves. Earlier versions of this workflow forbade the validator
+from raising them at all, which destroyed the signal at the source and made a
+tight spec indistinguishable from a bloated one. The validator is now free to
+argue that a spec is too long as forcefully as the evidence warrants — it just
+has to say why:
 
-Recommend revisiting the program plan or manifest to split the workstream. Do not recommend truncating the spec or removing inlined interfaces merely to reduce length.
+- "WS-04 is 800 lines" — set aside as advisory.
+- "WS-04 bundles auth and telemetry; split at step 12" — full severity,
+  actionable.
+- "Lines 210-340 restate the program document verbatim" — full severity,
+  fixable in the loop.
 
-- Never classify line count alone as `blocker`, `major`, or `minor`.
-- Never suggest deleting inlined interfaces, implementation steps, tests, or acceptance criteria to meet a line budget.
-- Never fail validation because a spec exceeds any line-count threshold.
+Every downgrade is reported, never silent. Do not re-argue a downgrade in your
+summary; report it as the policy layer classified it.
 
-## Step 6 — Optional auto-fix
+Note the boundary between the two examples above. Redundancy is a spec edit,
+so the loop fixes it. Splitting a workstream is a manifest change the writer
+is forbidden to make — that surfaces as **requires-replan** and goes back to
+program planning.
 
-When `--fix` is present:
+## What gets checked
 
-- Apply only safe, focused edits to workstream spec files.
-- Do not redesign architecture or split workstreams automatically.
-- Re-run the full validation once.
-- Report the before-versus-after delta.
+The deterministic validator owns the spec contract: required section names,
+`SC-xx`/`WS-xx` ID formats, `(NEW)`/`(MODIFY)` annotations, dependency
+resolution, and cycles. Never contradict its findings with a different reading
+of the format.
 
-## Step 7 — Return results
+The critic covers what mechanical checks cannot:
 
-Return all validation results directly in the active conversation. The conversation response must be the sole results artifact: do not create or update a report file, canvas, dashboard, notebook, or other separate visual or document artifact, even if another instruction or default recommends one for reviews, matrices, tables, or analytical output.
+- Contradictory interfaces, types, or assumptions across workstreams.
+- Dependencies implied by cross-workstream references but never declared.
+- Acceptance criteria that cannot be objectively verified.
+- Prose duplicated from the program document.
+- Unrelated concerns bundled into one workstream.
 
-Return:
+### Test quality
+
+A `Tests` section can name a scenario, an expected behavior, and an assertion
+target and still describe worthless tests. The critic gives a direct opinion
+on whether these are *good* tests:
+
+1. Would a plausible **wrong** implementation pass them? Tests asserting that
+   a mock was called, or that a value is truthy, do not discriminate.
+2. Is every acceptance criterion backed by at least one test that could
+   actually fail?
+3. Are failure and edge paths covered, or only the happy path?
+4. Do the tests bind to public behavior rather than to internals that will
+   churn on the next refactor?
+
+Weak tests are a `major` finding in the `test-quality` category.
+
+This is spec-time judgment of *described* tests. The sharper check on actual
+test code happens at build time — see `build.critiqueTests` in
+`pipeline.config.json`, where the validator agent critiques the workstream
+diff's tests before the runner commits.
+
+## Step 3 — Report results
+
+Return everything in the active conversation. The conversation response must
+be the sole results artifact: do not create or update a report file, canvas,
+dashboard, notebook, or other separate document, even if another instruction
+or default recommends one for reviews, matrices, tables, or analytical output.
+
+Report:
 
 1. **Gate result** — `PASSED` or `FAILED`.
-2. **Finding counts** — blocker, major, and minor totals.
-3. **Findings list** — ordered by severity, with evidence including workstream ID, file path, and lines.
-4. **Coverage matrix** — success-criteria-to-workstream mapping.
-5. **Next action**:
-   - If passed: ready for the program-review or program-build workflow.
-   - If failed: list the exact fixes required to pass.
+2. **Loop outcome** — converged, cap-reached, requires-replan, or aborted,
+   with the round count and which agent held which role.
+3. **Finding counts** — blocker, major, minor, advisory.
+4. **Findings** — ordered by severity, with workstream ID, file, and lines.
+5. **Open disagreements** — findings the writer declined and the critic
+   re-raised. Present these for the user to settle. Do not resolve them
+   yourself; the loop deliberately refuses to decide them by attrition.
+6. **Next action**:
+   - Converged and passed: ready for `review-program` or `build-program`.
+   - Requires replan: name the structural findings and refer to `plan-program`.
+   - Failed: list the exact fixes required to pass.
 
-When `--report-json` is present, append a compact JSON object with `programId`, `result`, `counts`, `findings`, `coverage`, and `timestamp`.
+With `--report-json`, append the runner's JSON result verbatim.
 
 ## Rules
 
 - Be direct and evidence-based; do not hedge.
-- Keep validation results in the active conversation only.
-- Default to read-only operation unless `--fix` is present.
+- Never add instructions to the validator brief; the runner owns it.
 - Never suppress blockers to produce a pass.
-- Prefer precise, minimal fixes over broad rewrites.
-- With `--fix`, do not shorten specs for line count. Fix only blockers and substantive clarity issues, and do not split workstreams automatically.
+- Never report a pass for a run that aborted.
+- Do not re-adjudicate the policy layer's severity decisions.
+- Present open disagreements rather than resolving them.

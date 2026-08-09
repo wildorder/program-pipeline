@@ -1,7 +1,7 @@
 ---
 name: author-workstreams
 description: Author every workstream specification for a program and run the standard hard validation gate. Use after program planning to create self-contained implementation specs with traceability, interfaces, tests, and acceptance criteria.
-argument-hint: "<program-id> [--no-validate | --validate-only | --fix-and-validate] [--author-model <id>] [--validator-model <id>]"
+argument-hint: "<program-id> [--no-validate | --validate-only | --fix-and-validate] [--author-model <id>]"
 disable-model-invocation: true
 ---
 
@@ -17,30 +17,9 @@ Parse these optional flags from the invocation:
 - `--validate-only`: do not author; validate existing specs.
 - `--fix-and-validate`: after failed validation, make focused spec fixes and validate once more.
 - `--author-model <id>`: use the requested available model for authoring when the host supports model selection.
-- `--validator-model <id>`: use the requested available model for validation when the host supports model selection.
 
 Resolve the author from `--author-model`, then `models.author` in
 `pipeline.config.json`, then the host's current model.
-
-Resolve the validator in this order — stop at the first mechanism that
-works in the current host:
-
-1. Explicit `--validator-model` flag, when the host can run that model.
-2. **In-host switch**: `models.validator` from `pipeline.config.json`, when
-   the host can select that model or spawn a subagent with it (billing flows
-   through the host).
-3. **External validator agent**: the `validatorAgent` command from
-   `pipeline.config.json`, run as a separate process — pipe it the
-   validation instructions plus the spec, manifest, and program document
-   contents, since it shares no session context (billing flows through that
-   CLI's own account). Resolve `models.validator` into that CLI's own model
-   namespace and pass it explicitly via the CLI's model flag (for example
-   `codex exec --model <resolved-slug>`); never rely on the external CLI's
-   default model silently, and never expect the CLI to understand the
-   host-neutral intent string verbatim. This is how a cross-provider
-   validator works from hosts that cannot switch providers.
-4. Otherwise: validate with the current model and report the validation as
-   same-model rather than independent.
 
 Entries in `models` are host-neutral intent (for example `opus-5`, `sol`),
 not host-specific slugs. Resolve each to the nearest concrete model the
@@ -49,14 +28,16 @@ current host offers and state the mapping (for example "author `opus-5` →
 `pipeline.config.json` with host-specific slugs — the config must stay
 host-neutral so every host and teammate can resolve it.
 
-Before authoring, state which model fills each role, where the choice came
-from (flag, config, external agent, or default), and which mechanism will
-run the validator, so the user can object before work begins.
+**Validation is not yours to configure.** The packaged runner resolves the
+critic and writer from the `agent` and `validatorAgent` blocks and composes
+their briefs itself. You do not pick the validator, pipe it context, or tell
+it what to weigh — that seam is how "ignore length, ignore file counts"
+instructions used to reach a supposedly independent validator and quietly
+narrow the gate. Report which agents the runner names for each role so the
+user can object; the runner aborts on its own if either is missing.
 
-**Guardrail — independent validation:** if the resolved validator is the same
-model as the author, warn that same-model validation weakens the gate
-(correlated errors) and ask whether to proceed anyway or pick a different
-validator.
+Before authoring, state which model authors the specs and where that choice
+came from, so the user can object before work begins.
 
 Do not assume provider-specific model names. If the user requests an
 unavailable model, stop and ask them to choose from the host's supported
@@ -143,7 +124,8 @@ Omit only when this is the first program and no relevant code exists.]
 [Precise, intentionally ordered, numbered steps.]
 
 ## Tests
-[Numbered cases, each naming the scenario, expected behavior, and assertions.]
+[Numbered cases, each naming the scenario, expected behavior, and assertions.
+Write tests that discriminate: see the test-quality rules below.]
 
 ## Acceptance Criteria
 [Numbered, objectively verifiable completion conditions.]
@@ -153,15 +135,32 @@ Save each spec to the exact `taskFile` path in the manifest, normally `tasks/{pr
 
 ## 4. Validate unless disabled
 
-Unless `--no-validate` is present, immediately run the repository's standard `validate-workstreams` workflow or command using the validator selected above. Treat validation as a hard gate.
+Unless `--no-validate` is present, hand the specs to the packaged convergence
+loop and treat it as a hard gate:
 
+```sh
+npm exec program-pipeline -- converge "{program-id}"
+```
+
+The runner owns the loop: it composes the validator brief itself, alternates
+critic and writer between the two configured agents so neither grades its own
+writing, and applies the cause-required severity policy. Do not compose the
+validator's instructions, tell it what to ignore, or re-adjudicate its
+findings — see `validate-workstreams` for the full contract.
+
+- Report the gate result, the loop outcome, and blocker/major/minor/advisory
+  counts.
 - Put `blocker` findings first and return `FAILED` when any exist.
-- Report blocker, major, and minor counts.
-- With `--fix-and-validate`, make only targeted fixes to the specs and run validation one more time.
-- With `--validate-only`, do not rewrite specs unless `--fix-and-validate` is also present.
-- When there are no blockers, return `PASSED` and mark the specs ready for `review-program`.
+- Surface open disagreements for the user to settle rather than resolving them.
+- On `requires-replan`, stop and refer back to `plan-program`; further spec
+  polish on a workstream that must be split is wasted.
+- With `--validate-only`, run the loop with `--rounds 1` so the critic reports
+  without a writer pass.
+- When the gate passes, mark the specs ready for `review-program`.
 
-If the standard validation capability is unavailable, do not claim a pass. Report validation as not run and identify the missing capability.
+If the loop aborts — a missing `validatorAgent`, a usage limit, an
+authentication failure — do not claim a pass. Report validation as not run and
+name the missing capability.
 
 ## 5. Report
 
@@ -179,6 +178,25 @@ Report:
 - Inline actual interface definitions instead of merely pointing at their files.
 - Mark every file `(NEW)` or `(MODIFY)`.
 - Order implementation steps intentionally.
+
+### Test quality
+
+Naming a scenario, an expected behavior, and an assertion target satisfies the
+mechanical contract and still permits worthless tests. Validation now judges
+whether the tests are *good*, so write them that way:
+
+1. **Discriminate.** A plausible wrong implementation must fail. A test that
+   asserts a mock was called, or that a result is truthy, proves nothing.
+   State the concrete expected value, not its shape.
+2. **Cover every acceptance criterion.** Each numbered criterion needs at
+   least one test that could actually fail. A criterion nothing can falsify
+   is not verified.
+3. **Reach the failure paths.** If the spec names error handling, boundary
+   values, empty inputs, or concurrency, test them — not just the happy path.
+4. **Bind to public behavior.** Assert at the module boundary the spec
+   defines, not on internals that the next refactor will churn.
+
+Weak tests are raised as a `major` finding in the `test-quality` category.
 
 ### Scope and length
 

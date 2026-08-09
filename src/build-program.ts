@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import {
@@ -10,32 +9,36 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import {
+  defaultAgentRunner,
+  defaultVerifyRunner,
+  describeAgent,
+  resolveAgent,
+  resolveValidatorAgent,
+  runProcess,
+  tail,
+  type AgentRunner,
+  type CommandResult,
+  type VerifyRunner,
+} from "./agent-runner.js";
+import type { Finding } from "./findings.js";
 import { stableTopologicalOrder } from "./graph.js";
 import {
   loadPipelineConfig,
-  type AgentConfig,
   type PipelineConfig,
 } from "./pipeline-config.js";
+import { critiqueTests } from "./test-critique.js";
 import { SPEC_CONTRACT, specSection, validateWorkstreams } from "./validate.js";
 
-export interface CommandResult {
-  exitCode: number;
-  output: string;
-  /** Set when the prompt could not be fully delivered to the process stdin. */
-  inputError?: string;
-}
-
-export interface AgentInvocation {
-  command: string;
-  args: string[];
-  prompt: string;
-  promptMode: "stdin" | "argument";
-  cwd: string;
-  onOutput?: (chunk: string) => void;
-}
-
-export type AgentRunner = (invocation: AgentInvocation) => Promise<CommandResult>;
-export type VerifyRunner = (command: string, cwd: string) => Promise<CommandResult>;
+export {
+  defaultAgentRunner,
+  defaultVerifyRunner,
+  sanitizedEnvironment,
+  type AgentInvocation,
+  type AgentRunner,
+  type CommandResult,
+  type VerifyRunner,
+} from "./agent-runner.js";
 
 export interface BuildProgramOptions {
   cwd: string;
@@ -77,6 +80,15 @@ export type BuildOutcome =
   | "PLANNED"
   | "APPROVAL_REQUIRED";
 
+/**
+ * A validator agent's opinion of the tests a workstream agent wrote. Advisory
+ * by design: it never blocks a commit that passed independent verification.
+ */
+export interface TestCritiqueRecord {
+  id: string;
+  findings: Finding[];
+}
+
 export interface BuildProgramResult {
   programId: string;
   result: BuildOutcome;
@@ -85,6 +97,8 @@ export interface BuildProgramResult {
   agent?: string;
   plan: PlanEntry[];
   outcomes: WorkstreamOutcome[];
+  /** Populated when `build.critiqueTests` is enabled. */
+  testCritiques?: TestCritiqueRecord[];
   eventsPath?: string;
 }
 
@@ -96,107 +110,10 @@ interface ManifestWorkstream {
   dependencies: string[];
 }
 
-// In-memory output is kept to a bounded tail; full output belongs in the
-// per-workstream log via onOutput streaming.
-const OUTPUT_TAIL_LIMIT = 200_000;
-
 // A nonzero agent exit this soon after spawn, with the tree untouched, means
 // the agent never got to work (usage limit, credentials, startup failure) —
 // an environmental failure, not the workstream's.
 const AGENT_ENVIRONMENT_FAILURE_MS = 30_000;
-
-/**
- * Environment for workstream agents: the parent may itself be an agent
- * session (Claude Code, Cursor), and inherited session markers can make the
- * child CLI behave as if attached to that session instead of running as a
- * clean headless agent.
- */
-export function sanitizedEnvironment(
-  base: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(base)) {
-    if (key === "CLAUDECODE" || key.startsWith("CLAUDE_CODE_")) continue;
-    if (key === "CURSOR_AGENT" || key.startsWith("CURSOR_TRACE_")) continue;
-    env[key] = value;
-  }
-  return env;
-}
-
-function runProcess(
-  command: string,
-  args: string[],
-  options: {
-    cwd: string;
-    input?: string;
-    shell: boolean;
-    onOutput?: (chunk: string) => void;
-    env?: NodeJS.ProcessEnv;
-  },
-): Promise<CommandResult> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      shell: options.shell,
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-      ...(options.env ? { env: options.env } : {}),
-    });
-    let buffered = "";
-    const push = (chunk: string): void => {
-      options.onOutput?.(chunk);
-      buffered = (buffered + chunk).slice(-OUTPUT_TAIL_LIMIT);
-    };
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", push);
-    child.stderr.on("data", push);
-    child.on("error", rejectPromise);
-    let inputError: Error | undefined;
-    child.stdin.on("error", (error: Error) => {
-      inputError = error;
-    });
-    child.on("close", (code) =>
-      resolvePromise({
-        exitCode: code ?? 1,
-        output: buffered,
-        ...(inputError ? { inputError: inputError.message } : {}),
-      }),
-    );
-    if (options.input !== undefined) child.stdin.end(options.input);
-    else child.stdin.end();
-  });
-}
-
-export const defaultAgentRunner: AgentRunner = (invocation) =>
-  runProcess(
-    invocation.command,
-    invocation.promptMode === "argument"
-      ? [...invocation.args, invocation.prompt]
-      : invocation.args,
-    {
-      cwd: invocation.cwd,
-      // A shell re-parses the argument list, and on Windows cmd.exe mangles
-      // multiline prompt arguments — so argument mode always spawns the
-      // command directly. The shell is only used on Windows for stdin mode,
-      // where it is needed to launch .cmd shims and cannot corrupt the
-      // prompt (which travels via stdin, not argv).
-      shell:
-        process.platform === "win32" && invocation.promptMode !== "argument",
-      env: sanitizedEnvironment(),
-      ...(invocation.onOutput ? { onOutput: invocation.onOutput } : {}),
-      ...(invocation.promptMode === "stdin"
-        ? { input: invocation.prompt }
-        : {}),
-    },
-  );
-
-export const defaultVerifyRunner: VerifyRunner = (command, cwd) =>
-  runProcess(command, [], { cwd, shell: true });
-
-function tail(output: string, limit = 2000): string {
-  return output.length > limit ? output.slice(-limit) : output;
-}
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -424,15 +341,6 @@ async function writeProgramStatus(
   await writeFile(manifestPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
 }
 
-function resolveAgent(config: PipelineConfig): AgentConfig | undefined {
-  if (config.agent) return config.agent;
-  const command = process.env.PROGRAM_PIPELINE_AGENT_COMMAND;
-  if (command && command.trim().length > 0) {
-    return { command, args: [], promptMode: "stdin" };
-  }
-  return undefined;
-}
-
 function buildPlan(
   ordered: ManifestWorkstream[],
   startFrom: string | undefined,
@@ -576,9 +484,7 @@ export async function buildProgram(
   if (planError) return aborted(planError);
 
   const agent = resolveAgent(config);
-  const agentLabel = agent
-    ? [agent.command, ...agent.args].join(" ")
-    : undefined;
+  const agentLabel = agent ? describeAgent(agent) : undefined;
   const agentField = agentLabel === undefined ? {} : { agent: agentLabel };
 
   if (options.dryRun) {
@@ -737,6 +643,7 @@ export async function buildProgram(
   );
 
   const outcomes: WorkstreamOutcome[] = [];
+  const testCritiques: TestCritiqueRecord[] = [];
   const byId = new Map(ordered.map((workstream) => [workstream.id, workstream]));
   let runIndex = 0;
 
@@ -776,10 +683,10 @@ export async function buildProgram(
     );
 
     let newFiles: string[] = [];
+    let specMarkdown = "";
     try {
-      newFiles = declaredNewFiles(
-        await readFile(resolve(root, workstream.taskFile), "utf8"),
-      );
+      specMarkdown = await readFile(resolve(root, workstream.taskFile), "utf8");
+      newFiles = declaredNewFiles(specMarkdown);
     } catch {
       // Preflight validation already guarantees the spec exists.
     }
@@ -1033,6 +940,42 @@ export async function buildProgram(
     }
 
     if (verified) {
+      // Independent verification only proves the implementation and its tests
+      // agree — the same agent wrote both. Ask the validator agent whether the
+      // tests would catch a wrong implementation. This annotates the build; it
+      // never blocks a commit that already passed verification.
+      if (config.build.critiqueTests) {
+        const critique = await critiqueTests({
+          root,
+          workstreamId: workstream.id,
+          workstreamName: workstream.name,
+          spec: specMarkdown,
+          validator: resolveValidatorAgent(config),
+          agentRunner,
+        });
+        if (critique.skipped) {
+          await emit("test-critique-skipped", {
+            id: workstream.id,
+            reason: critique.skipped,
+          });
+          progress(`${workstream.id} test critique skipped: ${critique.skipped}`);
+        } else {
+          testCritiques.push({
+            id: workstream.id,
+            findings: critique.findings,
+          });
+          await emit("test-critique", {
+            id: workstream.id,
+            findings: critique.findings,
+          });
+          progress(
+            critique.findings.length === 0
+              ? `${workstream.id} test critique: no findings`
+              : `${workstream.id} test critique: ${critique.findings.length} finding(s)`,
+          );
+        }
+      }
+
       // Manifest statuses are written before the commit so the workstream's
       // completion — and, for the last one, the program's — travel in the
       // commit that carries the implementation, leaving the tree clean.
@@ -1108,6 +1051,7 @@ export async function buildProgram(
         ...agentField,
         plan,
         outcomes,
+        ...(testCritiques.length > 0 ? { testCritiques } : {}),
         eventsPath,
       };
     }
@@ -1127,6 +1071,7 @@ export async function buildProgram(
     ...agentField,
     plan,
     outcomes,
+    ...(testCritiques.length > 0 ? { testCritiques } : {}),
     eventsPath,
   };
 }

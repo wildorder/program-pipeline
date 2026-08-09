@@ -51,6 +51,10 @@ Two optional keys change how this skill behaves:
   by this package) — the only approval gate. See Step 4.
 - **`build.commit`** (default `true`) — the runner commits each workstream
   itself after verification passes. See Step 4.
+- **`build.critiqueTests`** (default `false`) — after verification passes and
+  before the commit, hand the workstream's diff to the `validatorAgent` and
+  ask whether the tests would actually catch a wrong implementation. See
+  Step 4.
 
 **Model transparency:** the `agent` block is the single source of truth for
 which agent and model build every workstream. State it verbatim to the user
@@ -114,6 +118,27 @@ The runner performs, per workstream:
 
 A failed workstream stops the build with a nonzero exit code.
 
+### Test critique
+
+Verification proves the implementation and its tests agree — but the same
+agent wrote both, so a green suite is the two halves of one opinion. With
+`build.critiqueTests` enabled, the runner hands the diff and the spec to the
+`validatorAgent`, which wrote neither, and asks whether a plausible wrong
+implementation would pass, whether every acceptance criterion has a test that
+could fail, whether failure paths are reached, and whether any test was
+weakened or deleted to make the suite green.
+
+This **annotates and never blocks**. A commit that passed independent
+verification still lands; the findings go to the events log
+(`test-critique`) and the build result, where you report them. A model
+judgment is not a strong enough signal to stall an unattended build, and
+blocking would need a rewrite-and-recheck loop that may never settle. If you
+want a failing critique to stop the build, that is a change to request
+explicitly — it is not the current behavior.
+
+It requires a `validatorAgent`; without one the runner logs
+`test-critique-skipped` and continues.
+
 ### Commits
 
 The runner owns commits — workstream agents are told never to commit. One
@@ -160,6 +185,8 @@ Report from the runner output and the events log:
 - Which workstreams completed, with attempt counts and commit SHAs.
 - Which workstream failed, the failing verify command, and the log path
   (`build-logs/{program-id}-{ws-id}.log`).
+- Any test-critique findings, grouped by workstream. These are advisory and
+  did not block the commit; present them so the user can decide what to fix.
 - Whether the build is resumable (`--start-from` or re-run to skip completed
   workstreams).
 - Next step after a full pass: run the program review or update the as-built

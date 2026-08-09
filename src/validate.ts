@@ -1,10 +1,26 @@
 import { access, readFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Ajv2020, type ErrorObject } from "ajv/dist/2020.js";
+import {
+  because,
+  isGateFailing,
+  sortBySeverity,
+  type Finding,
+} from "./findings.js";
 import { findCycles } from "./graph.js";
 import { PACKAGE_ROOT } from "./package-assets.js";
+import { applySeverityPolicy } from "./severity-policy.js";
 
-export type Severity = "blocker" | "major" | "minor";
+export {
+  FINDING_CATEGORIES,
+  countBySeverity,
+  fingerprint,
+  sortBySeverity,
+  type Evidence,
+  type Finding,
+  type FindingCategory,
+  type Severity,
+} from "./findings.js";
 
 /**
  * The deterministic workstream-spec contract. The authoring and validation
@@ -26,14 +42,6 @@ export const SPEC_CONTRACT = {
   /** Only list items count as file entries; other lines are commentary. */
   fileEntryPattern: "^\\s*(?:[-*]|\\d+\\.)\\s",
 } as const;
-
-export interface Finding {
-  severity: Severity;
-  code: string;
-  message: string;
-  workstreamId?: string;
-  file?: string;
-}
 
 export interface CoverageEntry {
   successCriterionId: string;
@@ -115,8 +123,11 @@ async function readManifest(
       findings: [
         {
           severity: "blocker",
+          category: "manifest",
           code: "manifest-missing",
+          subject: "manifest",
           message: `Manifest not found: docs/programs/${programId}-manifest.json`,
+          evidence: [because("manifest file absent", manifestPath)],
           file: manifestPath,
         },
       ],
@@ -134,20 +145,29 @@ async function readManifest(
       return {
         findings: (validate.errors ?? []).map((error: ErrorObject) => ({
           severity: "blocker" as const,
+          category: "manifest" as const,
           code: "manifest-schema",
+          subject: error.instancePath || "/",
           message: `${error.instancePath || "/"} ${error.message ?? "is invalid"}`,
+          evidence: [
+            because("manifest schema violation", error.message ?? "is invalid"),
+          ],
           file: manifestPath,
         })),
       };
     }
     return { manifest: raw, findings: [] };
   } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
     return {
       findings: [
         {
           severity: "blocker",
+          category: "manifest",
           code: "manifest-invalid",
-          message: error instanceof Error ? error.message : String(error),
+          subject: "manifest",
+          message: detail,
+          evidence: [because("manifest could not be parsed", detail)],
           file: manifestPath,
         },
       ],
@@ -173,8 +193,16 @@ export async function validateWorkstreams(
   if (manifest.program.id !== programId) {
     findings.push({
       severity: "blocker",
+      category: "manifest",
       code: "program-id-mismatch",
+      subject: "program id",
       message: `Manifest declares ${manifest.program.id} but the requested program is ${programId}.`,
+      evidence: [
+        because(
+          "manifest program id disagrees with the requested program",
+          `${manifest.program.id} != ${programId}`,
+        ),
+      ],
     });
   }
 
@@ -200,8 +228,11 @@ export async function validateWorkstreams(
       if (seen.has(value)) {
         findings.push({
           severity: code === "task-file-duplicate" ? "major" : "blocker",
+          category: "manifest",
           code,
+          subject: value,
           message: `Duplicate ${label}: ${value}.`,
+          evidence: [because(`duplicate ${label} in the manifest`, value)],
         });
       }
       seen.add(value);
@@ -217,8 +248,16 @@ export async function validateWorkstreams(
       if (!knownIds.has(dependency)) {
         findings.push({
           severity: "blocker",
+          category: "dependency",
           code: "dependency-unknown",
+          subject: dependency,
           message: `Unknown dependency ${dependency}.`,
+          evidence: [
+            because(
+              "declared dependency matches no workstream in the manifest",
+              dependency,
+            ),
+          ],
           workstreamId: workstream.id,
         });
       }
@@ -230,8 +269,13 @@ export async function validateWorkstreams(
     if (containsUnsafePath(root, workstream.taskFile)) {
       findings.push({
         severity: "blocker",
+        category: "spec-format",
         code: "task-path-unsafe",
+        subject: workstream.taskFile,
         message: `Task file escapes the project root: ${workstream.taskFile}`,
+        evidence: [
+          because("task file path resolves outside the project root", workstream.taskFile),
+        ],
         workstreamId: workstream.id,
       });
       continue;
@@ -241,8 +285,13 @@ export async function validateWorkstreams(
     if (!(await exists(taskPath))) {
       findings.push({
         severity: "blocker",
+        category: "spec-format",
         code: "spec-missing",
+        subject: workstream.taskFile,
         message: `Spec not found: ${workstream.taskFile}`,
+        evidence: [
+          because("manifest references a spec file that does not exist", workstream.taskFile),
+        ],
         workstreamId: workstream.id,
         file: taskPath,
       });
@@ -257,8 +306,13 @@ export async function validateWorkstreams(
     if (traceability.length === 0) {
       findings.push({
         severity: "blocker",
+        category: "traceability",
         code: "traceability-missing",
+        subject: "traceability section",
         message: "Traceability must reference at least one success criterion.",
+        evidence: [
+          because("Traceability section names no SC-xx identifier", workstream.taskFile),
+        ],
         workstreamId: workstream.id,
         file: taskPath,
       });
@@ -269,8 +323,16 @@ export async function validateWorkstreams(
       else {
         findings.push({
           severity: "major",
+          category: "traceability",
           code: "traceability-unknown",
+          subject: criterionId,
           message: `Unknown success criterion ${criterionId}.`,
+          evidence: [
+            because(
+              "spec traces to a criterion the manifest does not define",
+              criterionId,
+            ),
+          ],
           workstreamId: workstream.id,
           file: taskPath,
         });
@@ -296,8 +358,16 @@ export async function validateWorkstreams(
     ) {
       findings.push({
         severity: "blocker",
+        category: "spec-format",
         code: "files-annotation-missing",
+        subject: SPEC_CONTRACT.sections.filesTouched,
         message: "Every listed file must be annotated (NEW) or (MODIFY).",
+        evidence: [
+          because(
+            "a Files Touched list item lacks a (NEW) or (MODIFY) annotation",
+            workstream.taskFile,
+          ),
+        ],
         workstreamId: workstream.id,
         file: taskPath,
       });
@@ -310,8 +380,16 @@ export async function validateWorkstreams(
       if (!specSection(markdown, requiredSection)) {
         findings.push({
           severity: "major",
+          category: "spec-format",
           code: "section-missing",
+          subject: requiredSection,
           message: `Missing or empty ${requiredSection} section.`,
+          evidence: [
+            because(
+              "required spec section is absent or empty",
+              requiredSection,
+            ),
+          ],
           workstreamId: workstream.id,
           file: taskPath,
         });
@@ -322,8 +400,13 @@ export async function validateWorkstreams(
   for (const cycle of findCycles(manifest.workstreams)) {
     findings.push({
       severity: "blocker",
+      category: "dependency",
       code: "dependency-cycle",
+      subject: `cycle ${[...cycle].sort().join(" ")}`,
       message: `Dependency cycle: ${cycle.join(" -> ")}`,
+      evidence: [
+        because("dependency graph contains a cycle", cycle.join(" -> ")),
+      ],
     });
   }
 
@@ -331,8 +414,13 @@ export async function validateWorkstreams(
     if (workstreamIds.length === 0) {
       findings.push({
         severity: "blocker",
+        category: "coverage",
         code: "criterion-uncovered",
+        subject: criterionId,
         message: `${criterionId} has no workstream coverage.`,
+        evidence: [
+          because("no workstream traces to this success criterion", criterionId),
+        ],
       });
     }
   }
@@ -341,20 +429,29 @@ export async function validateWorkstreams(
     if (!touchedPackages.has(manifestPackage.name)) {
       findings.push({
         severity: "major",
+        category: "coverage",
         code: "package-untouched",
+        subject: manifestPackage.name,
         message: `Manifest package ${manifestPackage.name} is not assigned to a workstream.`,
+        evidence: [
+          because(
+            "manifest package is claimed by no workstream",
+            manifestPackage.name,
+          ),
+        ],
       });
     }
   }
 
-  const failed = findings.some(
-    ({ severity }) => severity === "blocker" || (strict && severity === "major"),
-  );
+  // Single choke point: severity is decided here, after every check has had
+  // its say, so no caller can gate a finding out before it is even raised.
+  const policed = applySeverityPolicy(findings);
+  const failed = policed.some((finding) => isGateFailing(finding, strict));
   return {
     programId: manifest.program.id,
     result: failed ? "FAILED" : "PASSED",
     strict,
-    findings,
+    findings: sortBySeverity(policed),
     coverage: [...coverage].map(([successCriterionId, workstreamIds]) => ({
       successCriterionId,
       workstreamIds,

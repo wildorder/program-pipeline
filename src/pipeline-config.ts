@@ -4,6 +4,15 @@ import { z } from "zod";
 
 export const PIPELINE_CONFIG_FILE = "pipeline.config.json";
 
+/**
+ * Hard cap on convergence rounds. Majors are the largest and most subjective
+ * finding class, so a critic can keep minting new ones indefinitely; in
+ * practice the cap, not the clean-round terminator, is what usually stops the
+ * loop. Each round is a full pass by two models over the program, so this
+ * ceiling is a cost control as much as a correctness one.
+ */
+export const MAX_VALIDATE_ROUNDS = 3;
+
 const agentSchema = z.object({
   command: z.string().min(1),
   args: z.array(z.string()).default([]),
@@ -31,13 +40,35 @@ export const pipelineConfigSchema = z.object({
       verifyRetries: z.number().int().min(0).default(1),
       logDir: z.string().min(1).default("build-logs"),
       commit: z.boolean().default(true),
+      /** Critique the workstream diff's tests before the runner commits. */
+      critiqueTests: z.boolean().default(false),
     })
     .default({
       maxRecoveryAttempts: 1,
       verifyRetries: 1,
       logDir: "build-logs",
       commit: true,
+      critiqueTests: false,
     }),
+  validate: z
+    .object({
+      /**
+       * Rounds of the author/critic convergence loop. 1 is a single
+       * one-shot critique — the pre-loop behavior.
+       */
+      rounds: z.number().int().min(1).max(MAX_VALIDATE_ROUNDS).default(2),
+      strict: z.boolean().default(false),
+      /**
+       * Rounds up to and including this number always cover the whole
+       * program. Scoping earlier would use the declared dependency graph to
+       * choose which workstreams to re-check — but finding *undeclared*
+       * dependencies is part of the job, so an undeclared consumer would sit
+       * outside the scoped set and never be examined. The graph is only
+       * trustworthy enough to scope with once it has survived a full pass.
+       */
+      scopeDownAfterRound: z.number().int().min(2).default(2),
+    })
+    .default({ rounds: 2, strict: false, scopeDownAfterRound: 2 }),
 });
 
 export type PipelineConfig = z.infer<typeof pipelineConfigSchema>;

@@ -146,7 +146,8 @@ Configure the runner in `pipeline.config.json`:
   "validatorAgent": { "command": "codex", "args": ["exec"] },
   "models": { "author": "claude-code/opus", "validator": "gpt-sol" },
   "verify": { "build": "npm run build", "test": "npm test" },
-  "build": { "maxRecoveryAttempts": 1, "verifyRetries": 1, "logDir": "build-logs", "commit": true }
+  "build": { "maxRecoveryAttempts": 1, "verifyRetries": 1, "logDir": "build-logs", "commit": true, "critiqueTests": false },
+  "validate": { "rounds": 2, "strict": false, "scopeDownAfterRound": 2 }
 }
 ```
 
@@ -162,6 +163,16 @@ a resumed build cannot dead-end on already-implemented work. A nonzero agent
 exit moments after spawn with an unchanged tree stops the build as an agent
 environment failure (usage limit, credentials, startup problem) rather than
 burning recovery attempts on instant repeats of the same error.
+
+**Test critique.** Independent verification proves only that the
+implementation and its tests agree — and the same agent wrote both. With
+`build.critiqueTests` enabled, the runner hands each workstream's diff and
+spec to the `validatorAgent` after verification passes and before the commit,
+asking whether a plausible wrong implementation would pass, whether every
+acceptance criterion has a test that could fail, whether failure paths are
+reached, and whether any test was weakened or deleted to make the suite green.
+It annotates and never blocks: the findings land in the events log as
+`test-critique` and in the build result, but a verified commit still lands.
 
 **Commits.** The runner owns commits; workstream agents are instructed never
 to commit. With `build.commit` enabled (the default), each workstream is
@@ -181,28 +192,63 @@ itself refuses — a rejecting hook, an unset `user.email` — is reported as
 `commit failed` and leaves the verified changes in the tree; it never fails
 the workstream, and the runner never bypasses hooks to force one through.
 
+### Spec validation: the convergence loop
+
+```sh
+npm exec program-pipeline -- converge phase-1
+npm exec program-pipeline -- converge phase-1 --rounds 3 --strict
+```
+
+Each round pairs one **critic**, which reports findings and never edits, with
+one **writer**, which applies fixes and may decline any finding it believes is
+wrong. The roles alternate between the `agent` and `validatorAgent` blocks, so
+neither model ever grades its own writing — a critic allowed to fix tends to
+stop finding, converging on its own taste rather than on quality.
+
+The runner composes both briefs itself. That is the point of putting the loop
+in the package rather than in a skill: when an orchestrating agent assembled
+the external validator's prompt, it could fold in its own framing ("ignore
+length, ignore file counts") and quietly narrow the gate before the critique
+began. There is no longer a seam to do that through.
+
+Rounds 1 and 2 always cover the whole program; scoping to changed workstreams
+is allowed only from round 3. Scoping earlier would use the declared
+dependency graph to choose what to re-check, but finding *undeclared*
+dependencies is part of the job — a workstream that silently consumes
+another's output is not in the producer's neighbor set.
+
+The loop ends as **converged** (a round produced no new blocker or major
+findings), **cap-reached** (the round cap ran out, a normal outcome given how
+subjective majors are), **requires-replan** (a structural defect no spec edit
+can fix — the loop stops immediately rather than polishing a workstream that
+should be split), or **aborted**. How the loop stopped and whether the gate
+passed are decided separately: the gate comes from the deterministic
+validator over the final tree.
+
+Findings the writer declined and the critic then re-raised are reported as
+**open disagreements** for a human to settle, rather than resolved by whoever
+edits last.
+
+**Severity is decided by policy, not by prompt.** A finding keeps its severity
+only if it cites a locatable cause — a file and line range, or a named
+concern. One supported solely by a measurement (line count, file count) is
+downgraded to `advisory` and drops out of the gate. This is the opposite of
+suppression: the critic may argue a spec is too long as forcefully as the
+evidence warrants, it just has to say why. "WS-04 is 800 lines" is set aside;
+"WS-04 bundles auth and telemetry, split at step 12" and "lines 210-340
+restate the program doc verbatim" keep full severity and stay actionable.
+
 Model roles are explicit, not implicit: the `agent` block is the single
 source of truth for what builds each workstream (the runner prints the
-resolved agent line in dry-run, approval, and build output), while `models`
-declares which model authors workstream specs and which validates them — the
-authoring and validation workflows read these as defaults and warn when the
-author and validator are the same model, since same-model validation weakens
-the gate.
+resolved agent line in dry-run, approval, and build output), and
+`validatorAgent` is the independent second opinion used by the convergence
+loop and by build-time test critique. `models` declares host-neutral intent
+for the workflows that select a model in-host.
 
-The validator works from any host: when the host can switch models in-host
-(for example Cursor), `models.validator` is honored directly and bills
-through the host; when it cannot (for example a cross-provider validator
-from Claude Code), the workflows fall back to running the `validatorAgent`
-command as a separate process, which bills through that CLI's own account.
-Same validator identity, host-appropriate mechanism.
-
-`validatorAgent` declares the invocation mechanism only — command, base
-args, prompt mode. Do not put a model flag in its args: the validator's
-identity lives solely in `models.validator`, and the workflows resolve that
-intent into the external CLI's model namespace when they invoke it. (The
-builder `agent` block is the exception: the deterministic runner passes its
-args verbatim, so the builder's model flag belongs there, spelled the way
-that CLI expects.)
+`validatorAgent` declares the invocation mechanism — command, base args,
+prompt mode — and the runner passes its args verbatim, exactly as it does for
+`agent`. A model flag for that CLI belongs there, spelled the way the CLI
+expects.
 
 **Model names.** The pipeline has no model registry; every name belongs to
 the namespace of the tool that consumes it. Args in `agent` and
@@ -286,8 +332,9 @@ command interface in this order as needed:
    plan and manifest.
 3. `/author-workstreams` — create self-contained implementation specs and run
    the validation gate.
-4. `/validate-workstreams` — independently check coverage, dependencies,
-   traceability, and build readiness.
+4. `/validate-workstreams` — run the critic/writer convergence loop over the
+   specs, checking coverage, dependencies, traceability, test quality, and
+   build readiness.
 5. `/review-program` — perform a read-only architecture and integration review.
 6. `/build-program` — execute manifest workstreams through the build pipeline.
 7. `/update-as-built` — snapshot the system that was actually built.

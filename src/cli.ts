@@ -22,6 +22,8 @@ import {
   type SkillTarget,
 } from "./install-skills.js";
 import { packageVersion } from "./package-assets.js";
+import { countBySeverity, sortBySeverity } from "./findings.js";
+import { validateLoop } from "./validate-loop.js";
 import { validateWorkstreams } from "./validate.js";
 
 function reportInstall(result: InstallSkillsResult): void {
@@ -268,6 +270,71 @@ program
   );
 
 program
+  .command("converge")
+  .description(
+    "Run the author/critic convergence loop over a program's workstream specs",
+  )
+  .argument("<program-id>", "Program ID")
+  .option("--cwd <path>", "Project directory", process.cwd())
+  .option("--rounds <n>", "Rounds to run (max 3)", (value) => Number(value))
+  .option("--strict", "Fail the gate on major findings")
+  .option("--json", "Print a machine-readable report", false)
+  .action(
+    async (
+      programId: string,
+      options: {
+        cwd: string;
+        rounds?: number;
+        strict?: boolean;
+        json: boolean;
+      },
+    ) => {
+      const result = await validateLoop({
+        cwd: options.cwd,
+        programId,
+        ...(options.rounds === undefined ? {} : { rounds: options.rounds }),
+        ...(options.strict === undefined ? {} : { strict: options.strict }),
+        onProgress: (line) => {
+          if (!options.json) console.log(line);
+        },
+      });
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        const counts = countBySeverity(result.findings);
+        console.log(`\n${result.result} (${result.outcome}): ${result.programId}`);
+        if (result.reason) console.log(result.reason);
+        console.log(
+          `blocker=${counts.blocker} major=${counts.major} minor=${counts.minor} advisory=${counts.advisory}`,
+        );
+        for (const finding of sortBySeverity(result.findings)) {
+          const scope = finding.workstreamId ? ` ${finding.workstreamId}` : "";
+          const label = finding.code ?? finding.category;
+          console.log(
+            `[${finding.severity}]${scope} ${label}: ${finding.message}`,
+          );
+        }
+        if (result.replanFindings.length > 0) {
+          console.log("\nRequires replanning (no spec edit can fix these):");
+          for (const finding of result.replanFindings) {
+            console.log(`- ${finding.subject}: ${finding.message}`);
+          }
+        }
+        if (result.openDisagreements.length > 0) {
+          console.log(
+            "\nOpen disagreements (the writer declined, the critic re-raised — settle these yourself):",
+          );
+          for (const { finding, reason } of result.openDisagreements) {
+            console.log(`- ${finding.subject}: ${finding.message}`);
+            console.log(`  declined because: ${reason}`);
+          }
+        }
+      }
+      if (result.result === "FAILED") process.exitCode = 1;
+    },
+  );
+
+program
   .command("validate")
   .description("Run deterministic workstream validation")
   .argument("<program-id>", "Program ID")
@@ -287,18 +354,18 @@ program
       if (options.json) {
         console.log(JSON.stringify(report, null, 2));
       } else {
-        const counts = { blocker: 0, major: 0, minor: 0 };
-        for (const finding of report.findings) counts[finding.severity] += 1;
+        const counts = countBySeverity(report.findings);
         console.log(`${report.result}: ${report.programId}`);
         console.log(
-          `blocker=${counts.blocker} major=${counts.major} minor=${counts.minor}`,
+          `blocker=${counts.blocker} major=${counts.major} minor=${counts.minor} advisory=${counts.advisory}`,
         );
-        for (const finding of report.findings) {
+        for (const finding of sortBySeverity(report.findings)) {
           const scope = finding.workstreamId
             ? ` ${finding.workstreamId}`
             : "";
+          const label = finding.code ?? finding.category;
           console.log(
-            `[${finding.severity}]${scope} ${finding.code}: ${finding.message}`,
+            `[${finding.severity}]${scope} ${label}: ${finding.message}`,
           );
         }
       }

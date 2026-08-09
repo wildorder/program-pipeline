@@ -1,7 +1,14 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { access, appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  access,
+  appendFile,
+  mkdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { stableTopologicalOrder } from "./graph.js";
 import {
@@ -36,6 +43,8 @@ export interface BuildProgramOptions {
   startFrom?: string;
   dryRun?: boolean;
   approve?: boolean;
+  /** Overrides `build.commit`; the CLI passes false for `--no-commit`. */
+  commit?: boolean;
   agentRunner?: AgentRunner;
   verifyRunner?: VerifyRunner;
   now?: () => Date;
@@ -57,6 +66,8 @@ export interface WorkstreamOutcome {
   attempts: number;
   agentExitCodes: number[];
   failedCommand?: string;
+  /** Short SHA of the runner's commit for this workstream, when it committed. */
+  commit?: string;
 }
 
 export type BuildOutcome =
@@ -209,7 +220,7 @@ async function treeSignature(
   root: string,
   excludeDir?: string,
 ): Promise<string | undefined> {
-  const pathspec = excludeDir ? ["--", ".", `:(exclude)${excludeDir}`] : [];
+  const pathspec = excludingLogDir(excludeDir);
   try {
     const status = await runProcess(
       "git",
@@ -227,6 +238,86 @@ async function treeSignature(
   } catch {
     return undefined;
   }
+}
+
+/** Pathspec limiting a git command to the tree minus the runner's log dir. */
+function excludingLogDir(excludeDir?: string): string[] {
+  return excludeDir ? ["--", ".", `:(exclude)${excludeDir}`] : [];
+}
+
+/**
+ * Working-tree entries in `git status --porcelain` form, excluding the
+ * runner's own log directory. Empty when the tree is clean or git is
+ * unavailable — callers gate on {@link treeSignature} for availability.
+ */
+async function dirtyPaths(root: string, excludeDir?: string): Promise<string[]> {
+  try {
+    const status = await runProcess(
+      "git",
+      ["status", "--porcelain", "-uall", ...excludingLogDir(excludeDir)],
+      { cwd: root, shell: false },
+    );
+    if (status.exitCode !== 0) return [];
+    return status.output
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+export interface CommitResult {
+  /** Short SHA of the commit the runner created. */
+  sha?: string;
+  /** Set when there was nothing to commit. */
+  empty?: boolean;
+  /** Set when git refused the commit (hooks, identity, index state). */
+  error?: string;
+}
+
+/**
+ * Commit the working tree as the workstream's result. Called only after
+ * independent verification passes, so every runner-authored commit is green.
+ * The log directory is excluded: build logs are runner output, not work.
+ */
+async function commitWorkstream(
+  root: string,
+  excludeDir: string | undefined,
+  message: string,
+): Promise<CommitResult> {
+  const pathspec = excludingLogDir(excludeDir);
+  const git = (args: string[]): Promise<CommandResult> =>
+    runProcess("git", args, { cwd: root, shell: false });
+  try {
+    const staged = await git(["add", "-A", ...pathspec]);
+    if (staged.exitCode !== 0) {
+      return { error: `git add failed: ${tail(staged.output, 300).trim()}` };
+    }
+    // --quiet exits 0 when the index matches HEAD: nothing to commit.
+    const pending = await git(["diff", "--cached", "--quiet", ...pathspec]);
+    if (pending.exitCode === 0) return { empty: true };
+    const committed = await git(["commit", "-m", message]);
+    if (committed.exitCode !== 0) {
+      return { error: `git commit failed: ${tail(committed.output, 300).trim()}` };
+    }
+    const head = await git(["rev-parse", "--short", "HEAD"]);
+    return head.exitCode === 0 ? { sha: head.output.trim() } : {};
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function commitMessage(
+  programId: string,
+  workstream: ManifestWorkstream,
+  verifyCommands: Record<string, string>,
+): string {
+  return `build(${programId}): ${workstream.id} ${workstream.name}
+
+Workstream spec: ${workstream.taskFile}
+Verified: ${Object.keys(verifyCommands).join(", ")}
+`;
 }
 
 /** Paths annotated (NEW) in the spec's Files Touched section. */
@@ -265,7 +356,9 @@ STEP 2 - IMPLEMENT:
 - Implement every requirement and every file listed in "Files Touched".
 - Follow the spec's implementation steps.
 - Write the tests described by the spec.
-- Do not commit changes, bypass hooks, or weaken verification.
+- Do not commit changes, bypass hooks, or weaken verification. The build runner
+  commits your work itself once it passes independent verification; leave the
+  changes in the working tree.
 
 STEP 3 - VERIFY (mandatory):
 These exact commands are re-run independently after you finish; the workstream
@@ -294,7 +387,9 @@ ${tail(failureOutput)}
 
 - Fix only the implementation and tests required by this workstream.
 - Ensure the project's verification commands exit successfully.
-- Do not commit changes, bypass hooks, or weaken verification.
+- Do not commit changes, bypass hooks, or weaken verification. The build runner
+  commits your work itself once it passes independent verification; leave the
+  changes in the working tree.
 `;
 }
 
@@ -309,6 +404,13 @@ async function writeWorkstreamStatus(
   const entry = raw.workstreams.find(({ id }) => id === workstreamId);
   if (entry) entry.status = status;
   await writeFile(manifestPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+}
+
+async function everyWorkstreamComplete(manifestPath: string): Promise<boolean> {
+  const raw = JSON.parse(await readFile(manifestPath, "utf8")) as {
+    workstreams: Array<{ status: string }>;
+  };
+  return raw.workstreams.every(({ status }) => status === "complete");
 }
 
 async function writeProgramStatus(
@@ -531,13 +633,78 @@ export async function buildProgram(
     );
   };
 
+  const signTree = (): Promise<string | undefined> =>
+    treeSignature(root, config.build.logDir);
+  const treeGuardAvailable = (await signTree()) !== undefined;
+
+  // The runner owns commits: one per workstream, written only after that
+  // workstream passes independent verification.
+  const commitRequested = options.commit ?? config.build.commit;
+  const commitEnabled = commitRequested && treeGuardAvailable;
+
+  // Signature of the working tree a previous failed run of this program left
+  // behind. It is the only uncommitted state the runner will build on top of
+  // — anything else is the user's own work and must not land in a
+  // machine-authored commit.
+  const uncommittedPath = join(logDir, `${options.programId}-uncommitted.json`);
+  const readLeftoverSignature = async (): Promise<string | undefined> => {
+    try {
+      const state = JSON.parse(await readFile(uncommittedPath, "utf8")) as {
+        signature?: string;
+      };
+      return state.signature;
+    } catch {
+      return undefined;
+    }
+  };
+  const recordLeftovers = async (workstreamId: string): Promise<void> => {
+    if (!commitEnabled) return;
+    const signature = await signTree();
+    if (signature === undefined) return;
+    await writeFile(
+      uncommittedPath,
+      `${JSON.stringify(
+        { signature, workstreamId, timestamp: now().toISOString() },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+  };
+
+  if (commitEnabled) {
+    const dirty = await dirtyPaths(root, config.build.logDir);
+    if (dirty.length > 0) {
+      const leftover = await readLeftoverSignature();
+      if (leftover === undefined || leftover !== (await signTree())) {
+        return aborted(
+          `The working tree has ${dirty.length} uncommitted change(s), and the runner commits each workstream itself — it will not sweep unrelated work into a build commit. Commit or stash your changes and re-run, or re-run with --no-commit to build without committing. Changes: ${dirty
+            .slice(0, 10)
+            .join("; ")}${dirty.length > 10 ? "; …" : ""}`,
+          plan,
+        );
+      }
+      progress(
+        `resuming on top of ${dirty.length} uncommitted change(s) left by a previous failed build`,
+      );
+    }
+  }
+
   await emit("build-start", {
     programId: options.programId,
     plan,
     agentCommand: agent.command,
     verify: Object.keys(verifyCommands),
+    commit: commitEnabled,
   });
   await writeProgramStatus(manifestPath, "in_progress");
+
+  if (commitRequested && !commitEnabled) {
+    await emit("commit-disabled", {
+      reason: "not a git repository or git unavailable",
+    });
+    progress("per-workstream commits disabled: not a git repository");
+  }
 
   // Tree signatures captured before each workstream's first-ever attempt,
   // persisted across runs. They let the no-op guard distinguish an agent
@@ -555,9 +722,6 @@ export async function buildProgram(
     // First build for this program, or the state file was removed.
   }
 
-  const signTree = (): Promise<string | undefined> =>
-    treeSignature(root, config.build.logDir);
-  const treeGuardAvailable = (await signTree()) !== undefined;
   if (!treeGuardAvailable) {
     await emit("tree-guard-disabled", {
       reason:
@@ -656,6 +820,7 @@ export async function buildProgram(
           progress(`${workstream.id} agent failed to start: ${message}`);
           await writeWorkstreamStatus(manifestPath, workstream.id, "failed");
           await writeProgramStatus(manifestPath, "failed");
+          await recordLeftovers(workstream.id);
           outcomes.push({
             id: workstream.id,
             status: "failed",
@@ -724,6 +889,7 @@ export async function buildProgram(
             );
             await writeWorkstreamStatus(manifestPath, workstream.id, "failed");
             await writeProgramStatus(manifestPath, "failed");
+            await recordLeftovers(workstream.id);
             outcomes.push({
               id: workstream.id,
               status: "failed",
@@ -867,7 +1033,43 @@ export async function buildProgram(
     }
 
     if (verified) {
+      // Manifest statuses are written before the commit so the workstream's
+      // completion — and, for the last one, the program's — travel in the
+      // commit that carries the implementation, leaving the tree clean.
       await writeWorkstreamStatus(manifestPath, workstream.id, "complete");
+      if (await everyWorkstreamComplete(manifestPath)) {
+        await writeProgramStatus(manifestPath, "complete");
+      }
+      let commitSha: string | undefined;
+      if (commitEnabled) {
+        const committed = await commitWorkstream(
+          root,
+          config.build.logDir,
+          commitMessage(options.programId, workstream, verifyCommands),
+        );
+        if (committed.error) {
+          // The work is verified and the manifest is updated; a git-side
+          // refusal (hooks, missing identity) is not a workstream failure.
+          await emit("commit-failed", {
+            id: workstream.id,
+            message: committed.error,
+          });
+          progress(
+            `${workstream.id} commit failed, changes left in the working tree: ${committed.error}`,
+          );
+        } else if (committed.empty) {
+          await emit("commit-skipped", {
+            id: workstream.id,
+            reason: "nothing to commit",
+          });
+          progress(`${workstream.id} nothing to commit`);
+        } else {
+          commitSha = committed.sha;
+          await rm(uncommittedPath, { force: true });
+          await emit("commit", { id: workstream.id, sha: commitSha });
+          progress(`${workstream.id} committed ${commitSha ?? ""}`.trimEnd());
+        }
+      }
       await emit("workstream-complete", { id: workstream.id, attempts });
       progress(
         `${workstream.id} complete after ${attempts} attempt(s) in ${minutesSince(workstreamStartMs)}`,
@@ -877,10 +1079,12 @@ export async function buildProgram(
         status: "complete",
         attempts,
         agentExitCodes,
+        ...(commitSha === undefined ? {} : { commit: commitSha }),
       });
     } else {
       await writeWorkstreamStatus(manifestPath, workstream.id, "failed");
       await writeProgramStatus(manifestPath, "failed");
+      await recordLeftovers(workstream.id);
       await emit("workstream-failed", {
         id: workstream.id,
         attempts,

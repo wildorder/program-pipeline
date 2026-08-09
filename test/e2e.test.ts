@@ -209,6 +209,9 @@ process.stdin.on("end", () => {
       >;
       config.agent = { command: "node", args: ["agent-stub.cjs"] };
       config.verify = { check: 'node -e "process.exit(0)"' };
+      // init leaves builds ungated; turn the gate on to exercise it.
+      expect(config.requireApprovalBeforeBuild).toBe(false);
+      config.requireApprovalBeforeBuild = true;
       await writeFile(
         configPath,
         `${JSON.stringify(config, null, 2)}\n`,

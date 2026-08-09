@@ -215,6 +215,10 @@ program
   .option("--start-from <workstream-id>", "Resume from a workstream ID or prefix")
   .option("--dry-run", "Print the execution plan without running anything", false)
   .option("--yes", "Approve execution when the config requires approval", false)
+  .option(
+    "--no-commit",
+    "Do not commit each verified workstream (overrides build.commit)",
+  )
   .action(
     async (
       programId: string,
@@ -223,6 +227,7 @@ program
         startFrom?: string;
         dryRun: boolean;
         yes: boolean;
+        commit: boolean;
       },
     ) => {
       const report = await buildProgram({
@@ -233,6 +238,9 @@ program
           : { startFrom: options.startFrom }),
         dryRun: options.dryRun,
         approve: options.yes,
+        // Commander defaults --no-commit's value to true, so only an explicit
+        // false is an override; otherwise the config decides.
+        ...(options.commit === false ? { commit: false } : {}),
         onProgress: (line) => console.log(line),
       });
 
@@ -243,8 +251,9 @@ program
         console.log(`plan ${entry.id} ${entry.name}${suffix}`);
       }
       for (const outcome of report.outcomes) {
+        const commit = outcome.commit ? ` (commit ${outcome.commit})` : "";
         console.log(
-          `${outcome.status} ${outcome.id} after ${outcome.attempts} attempt(s)`,
+          `${outcome.status} ${outcome.id} after ${outcome.attempts} attempt(s)${commit}`,
         );
       }
       if (report.eventsPath) console.log(`events ${report.eventsPath}`);

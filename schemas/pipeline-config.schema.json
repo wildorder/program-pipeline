@@ -68,7 +68,9 @@
       "additionalProperties": false,
       "properties": {
         "maxRecoveryAttempts": { "type": "integer", "minimum": 0 },
-        "logDir": { "type": "string", "minLength": 1 }
+        "verifyRetries": { "type": "integer", "minimum": 0 },
+        "logDir": { "type": "string", "minLength": 1 },
+        "commit": { "type": "boolean" }
       }
     }
   }

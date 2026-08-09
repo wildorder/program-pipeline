@@ -147,8 +147,33 @@ function initGitRepo(root: string): void {
     if (result.status !== 0) throw new Error(result.stderr);
   };
   git(["init"]);
+  // Local identity: the runner's own commits use the repository's config.
+  git(["config", "user.email", "t@t.dev"]);
+  git(["config", "user.name", "t"]);
   git(["add", "-A"]);
-  git(["-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-m", "baseline"]);
+  git(["commit", "-m", "baseline"]);
+}
+
+/** Working-tree changes, ignoring the runner's own log output. */
+async function dirtyEntries(root: string): Promise<string[]> {
+  const result = spawnSync("git", ["status", "--porcelain", "-uall"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) throw new Error(result.stderr);
+  return result.stdout
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.includes("build-logs/"));
+}
+
+function gitLog(root: string): string[] {
+  const result = spawnSync("git", ["log", "--format=%s"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) throw new Error(result.stderr);
+  return result.stdout.split(/\r?\n/u).filter((line) => line.length > 0);
 }
 
 describe("sanitizedEnvironment", () => {
@@ -210,6 +235,7 @@ describe("buildProgram", () => {
       .map((line) => JSON.parse(line) as { event: string });
     expect(events.map(({ event }) => event)).toEqual([
       "build-start",
+      "commit-disabled",
       "tree-guard-disabled",
       "workstream-start",
       "agent-start",
@@ -578,6 +604,7 @@ describe("buildProgram", () => {
 
     expect(report.result).toBe("COMPLETE");
     expect(lines).toEqual([
+      "per-workstream commits disabled: not a git repository",
       "no-op tree guard disabled: not a git repository",
       expect.stringContaining("build alpha: 2 workstream(s) to run, agent: fake-agent"),
       "WS-01 start: Core (1/2)",
@@ -739,5 +766,192 @@ describe("buildProgram", () => {
 
     expect(report.result).toBe("COMPLETE");
     expect(ran).toEqual(["WS-02"]);
+  });
+
+  it("commits each workstream after it passes verification", async () => {
+    const root = await fixture();
+    initGitRepo(root);
+    let workstream = 0;
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        workstream += 1;
+        await writeFile(
+          join(root, "src", "example.ts"),
+          `// workstream ${workstream}\n`,
+          "utf8",
+        );
+        return pass();
+      },
+      verifyRunner: pass,
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    expect(gitLog(root)).toEqual([
+      "build(alpha): WS-02 API",
+      "build(alpha): WS-01 Core",
+      "baseline",
+    ]);
+    for (const outcome of report.outcomes) {
+      expect(outcome.commit).toMatch(/^[0-9a-f]{7,}$/u);
+    }
+    // Everything the workstreams produced is committed, including the
+    // manifest status the runner wrote for them.
+    expect(await dirtyEntries(root)).toEqual([]);
+  });
+
+  it("commits only up to the failing workstream", async () => {
+    const root = await fixture({ maxRecoveryAttempts: 0 });
+    initGitRepo(root);
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        await writeFile(
+          join(root, "src", "example.ts"),
+          invocation.prompt.includes("WS-02") ? "// ws-02\n" : "// ws-01\n",
+          "utf8",
+        );
+        return pass();
+      },
+      // WS-02's implementation never verifies.
+      verifyRunner: async () =>
+        (await readFile(join(root, "src", "example.ts"), "utf8")).includes("ws-02")
+          ? { exitCode: 1, output: "boom" }
+          : pass(),
+    });
+
+    expect(report.result).toBe("FAILED");
+    expect(gitLog(root)).toEqual(["build(alpha): WS-01 Core", "baseline"]);
+    // WS-02's unverified work stays in the tree, uncommitted.
+    expect(await dirtyEntries(root)).not.toEqual([]);
+  });
+
+  it("aborts before touching the manifest when the tree is dirty", async () => {
+    const root = await fixture();
+    initGitRepo(root);
+    await writeFile(join(root, "src", "unrelated.ts"), "// mine\n", "utf8");
+    let agentCalls = 0;
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        agentCalls += 1;
+        return pass();
+      },
+      verifyRunner: pass,
+    });
+
+    expect(report.result).toBe("ABORTED");
+    expect(report.reason).toContain("uncommitted change");
+    expect(report.reason).toContain("src/unrelated.ts");
+    expect(agentCalls).toBe(0);
+    expect(await programStatus(root)).toBe("planning");
+  });
+
+  it("builds a dirty tree without committing when commits are disabled", async () => {
+    const root = await fixture();
+    initGitRepo(root);
+    await writeFile(join(root, "src", "unrelated.ts"), "// mine\n", "utf8");
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      commit: false,
+      agentRunner: async (invocation) => {
+        await writeFile(
+          join(root, "src", "example.ts"),
+          `// ${invocation.prompt.includes("WS-02") ? "ws-02" : "ws-01"}\n`,
+          "utf8",
+        );
+        return pass();
+      },
+      verifyRunner: pass,
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    expect(gitLog(root)).toEqual(["baseline"]);
+    expect(report.outcomes.every(({ commit }) => commit === undefined)).toBe(true);
+  });
+
+  it("resumes on top of the uncommitted work its own failed run left behind", async () => {
+    const root = await fixture({ maxRecoveryAttempts: 0 });
+    initGitRepo(root);
+    const implement = async (
+      invocation: AgentInvocation,
+    ): Promise<CommandResult> => {
+      const id = invocation.prompt.includes("WS-02") ? "ws-02" : "ws-01";
+      await writeFile(join(root, "src", `${id}.ts`), "// implemented\n", "utf8");
+      return pass();
+    };
+
+    const first = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: implement,
+      verifyRunner: async () => ({ exitCode: 1, output: "not yet" }),
+    });
+    expect(first.result).toBe("FAILED");
+    expect(await dirtyEntries(root)).not.toEqual([]);
+
+    // The same dirty tree the runner left is not a reason to refuse a re-run.
+    const second = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: implement,
+      verifyRunner: pass,
+    });
+
+    expect(second.result, second.reason).toBe("COMPLETE");
+    expect(gitLog(root)[1]).toBe("build(alpha): WS-01 Core");
+  });
+
+  it("completes the workstream when git refuses the commit", async () => {
+    const root = await fixture();
+    initGitRepo(root);
+    const hook = join(root, ".git", "hooks", "pre-commit");
+    await writeFile(hook, "#!/bin/sh\nexit 1\n", { encoding: "utf8", mode: 0o755 });
+    const progressLines: string[] = [];
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        await writeFile(
+          join(root, "src", "example.ts"),
+          `// ${invocation.prompt.includes("WS-02") ? "ws-02" : "ws-01"}\n`,
+          "utf8",
+        );
+        return pass();
+      },
+      verifyRunner: pass,
+      onProgress: (line) => progressLines.push(line),
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    expect(gitLog(root)).toEqual(["baseline"]);
+    expect(progressLines.some((line) => line.includes("commit failed"))).toBe(true);
+  });
+
+  it("skips commits outside a git repository", async () => {
+    const root = await fixture();
+    const progressLines: string[] = [];
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: pass,
+      verifyRunner: pass,
+      onProgress: (line) => progressLines.push(line),
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    expect(
+      progressLines.some((line) => line.includes("commits disabled")),
+    ).toBe(true);
   });
 });

@@ -126,14 +126,16 @@ want packaged content to replace destination conflicts.
 Execute a program's workstreams in dependency order with the configured agent.
 The runner verifies every workstream itself by running the `verify` commands
 from `pipeline.config.json`, writes workstream status back to the manifest
-(`in_progress`, `complete`, `failed`), resumes by skipping workstreams already
-marked `complete`, and appends structured JSON events to
+(`in_progress`, `complete`, `failed`), commits each verified workstream,
+resumes by skipping workstreams already marked `complete`, and appends
+structured JSON events to
 `build-logs/{program-id}-build-{timestamp}.jsonl`.
 
 ```sh
 npm exec program-pipeline -- build phase-1 --cwd . --dry-run
 npm exec program-pipeline -- build phase-1 --cwd . --yes
 npm exec program-pipeline -- build phase-1 --cwd . --yes --start-from WS-03
+npm exec program-pipeline -- build phase-1 --cwd . --yes --no-commit
 ```
 
 Configure the runner in `pipeline.config.json`:
@@ -144,7 +146,7 @@ Configure the runner in `pipeline.config.json`:
   "validatorAgent": { "command": "codex", "args": ["exec"] },
   "models": { "author": "claude-code/opus", "validator": "gpt-sol" },
   "verify": { "build": "npm run build", "test": "npm test" },
-  "build": { "maxRecoveryAttempts": 1, "verifyRetries": 1, "logDir": "build-logs" }
+  "build": { "maxRecoveryAttempts": 1, "verifyRetries": 1, "logDir": "build-logs", "commit": true }
 }
 ```
 
@@ -160,6 +162,24 @@ a resumed build cannot dead-end on already-implemented work. A nonzero agent
 exit moments after spawn with an unchanged tree stops the build as an agent
 environment failure (usage limit, credentials, startup problem) rather than
 burning recovery attempts on instant repeats of the same error.
+
+**Commits.** The runner owns commits; workstream agents are instructed never
+to commit. With `build.commit` enabled (the default), each workstream is
+committed as `build({program-id}): {ws-id} {name}` immediately after it passes
+independent verification and its manifest status is written — so every
+runner-authored commit is green, and a failed build leaves exactly the work
+that did not pass in the working tree. `--no-commit` overrides the config for
+one run, and commits are skipped automatically outside a git repository.
+
+Because those commits must not absorb unrelated work, a dirty working tree
+aborts the build before it starts, listing the offending paths: commit or
+stash them, or re-run with `--no-commit`. The single exception is the
+uncommitted work a previous failed run of the same program left behind
+(fingerprinted in `build-logs/{program-id}-uncommitted.json`), which is
+accepted so resuming after a failure needs no cleanup. A commit that git
+itself refuses — a rejecting hook, an unset `user.email` — is reported as
+`commit failed` and leaves the verified changes in the tree; it never fails
+the workstream, and the runner never bypasses hooks to force one through.
 
 Model roles are explicit, not implicit: the `agent` block is the single
 source of truth for what builds each workstream (the runner prints the
@@ -208,8 +228,11 @@ shell — cmd.exe on Windows in particular — mangles multiline prompt
 arguments. Consequence on Windows: argument mode cannot launch `.cmd` shims
 (npm-installed CLI wrappers); point `command` at a real executable or use
 stdin mode. `PROGRAM_PIPELINE_AGENT_COMMAND` is honored as a fallback agent
-command. When `requireApprovalBeforeBuild` is `true`, execution requires
-`--yes`; use `--dry-run` to inspect the plan first. A workstream passes only
+command. `requireApprovalBeforeBuild` is the only approval gate — projects
+initialized by this package default it to `false`, so invoking the build
+workflow starts the build; set it to `true` when you want every build to stop
+for confirmation first (execution then requires `--yes`). Use `--dry-run` to
+inspect the plan without running anything. A workstream passes only
 when the agent exits successfully **and** every `verify` command exits
 successfully — verification alone never rubber-stamps a crashed agent, and an
 agent's success claim is never trusted without verification. `--start-from`

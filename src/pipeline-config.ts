@@ -30,8 +30,14 @@ export const pipelineConfigSchema = z.object({
       maxRecoveryAttempts: z.number().int().min(0).default(1),
       verifyRetries: z.number().int().min(0).default(1),
       logDir: z.string().min(1).default("build-logs"),
+      commit: z.boolean().default(true),
     })
-    .default({ maxRecoveryAttempts: 1, verifyRetries: 1, logDir: "build-logs" }),
+    .default({
+      maxRecoveryAttempts: 1,
+      verifyRetries: 1,
+      logDir: "build-logs",
+      commit: true,
+    }),
 });
 
 export type PipelineConfig = z.infer<typeof pipelineConfigSchema>;

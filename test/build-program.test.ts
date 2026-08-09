@@ -87,6 +87,9 @@ async function fixture(options: FixtureOptions = {}): Promise<string> {
     )}\n`,
     "utf8",
   );
+  // As `init-project` leaves a real project: the runner's log dir is
+  // gitignored, which git refuses to see named in an `add` pathspec.
+  await writeFile(join(root, ".gitignore"), "build-logs/\n", "utf8");
   await writeFile(join(root, "tasks", "alpha", "ws-01.md"), spec("WS-01"), "utf8");
   await writeFile(join(root, "tasks", "alpha", "ws-02.md"), spec("WS-02"), "utf8");
   await writeFile(
@@ -800,6 +803,56 @@ describe("buildProgram", () => {
     // Everything the workstreams produced is committed, including the
     // manifest status the runner wrote for them.
     expect(await dirtyEntries(root)).toEqual([]);
+  });
+
+  it("commits with the log dir gitignored, keeping logs out of the commit", async () => {
+    const root = await fixture();
+    initGitRepo(root);
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        await writeFile(
+          join(root, "src", "example.ts"),
+          invocation.prompt.includes("WS-02") ? "// ws-02\n" : "// ws-01\n",
+          "utf8",
+        );
+        return pass();
+      },
+      verifyRunner: pass,
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    for (const outcome of report.outcomes) {
+      expect(outcome.commit).toMatch(/^[0-9a-f]{7,}$/u);
+    }
+    const tracked = spawnSync("git", ["ls-files"], { cwd: root, encoding: "utf8" });
+    expect(tracked.stdout).not.toContain("build-logs");
+  });
+
+  it("keeps the log dir out of the commit when it is not gitignored", async () => {
+    const root = await fixture();
+    await rm(join(root, ".gitignore"));
+    initGitRepo(root);
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        await writeFile(
+          join(root, "src", "example.ts"),
+          invocation.prompt.includes("WS-02") ? "// ws-02\n" : "// ws-01\n",
+          "utf8",
+        );
+        return pass();
+      },
+      verifyRunner: pass,
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    const tracked = spawnSync("git", ["ls-files"], { cwd: root, encoding: "utf8" });
+    expect(tracked.stdout).not.toContain("build-logs");
   });
 
   it("commits only up to the failing workstream", async () => {

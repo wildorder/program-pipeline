@@ -207,9 +207,21 @@ async function commitWorkstream(
   const git = (args: string[]): Promise<CommandResult> =>
     runProcess("git", args, { cwd: root, shell: false });
   try {
-    const staged = await git(["add", "-A", ...pathspec]);
+    // The log dir cannot be held out by pathspec here: `git add` fails
+    // outright when any pathspec — a `:(exclude)` one included — names a
+    // gitignored path, and a default project gitignores its log dir. Stage
+    // the tree instead (git skips ignored files on its own), then unstage
+    // the log dir, which restores its index entry from HEAD and so leaves
+    // already-tracked log files as they were.
+    const staged = await git(["add", "-A", "--", "."]);
     if (staged.exitCode !== 0) {
       return { error: `git add failed: ${tail(staged.output, 300).trim()}` };
+    }
+    if (excludeDir) {
+      const held = await git(["reset", "--quiet", "--", excludeDir]);
+      if (held.exitCode !== 0) {
+        return { error: `git reset failed: ${tail(held.output, 300).trim()}` };
+      }
     }
     // --quiet exits 0 when the index matches HEAD: nothing to commit.
     const pending = await git(["diff", "--cached", "--quiet", ...pathspec]);

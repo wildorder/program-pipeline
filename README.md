@@ -291,6 +291,12 @@ Each block declares an invocation mechanism — command, base args, prompt mode
 — and the runner passes the args verbatim. A model flag for that CLI belongs
 there, spelled the way the CLI expects.
 
+By convention `validatorAgent` is the exception: leave its model flag out and
+let the external CLI run its own default. The role wants a second opinion
+from a different provider, which that default already is, so naming a model
+only adds a name to get wrong or to outlive its model. On `agent` and
+`authorAgent` the tier is the point, so name it.
+
 Test critique stays on `validatorAgent` deliberately: it reviews code the
 build agent wrote, so the independent reviewer is the point.
 
@@ -302,7 +308,7 @@ that is what `authorAgent` is for.
 
 **Model names.** The pipeline has no model registry; every name belongs to
 the namespace of the tool that consumes it. Args in `agent` and
-`validatorAgent` are whatever that CLI accepts — prefer stable aliases over
+`authorAgent` are whatever that CLI accepts — prefer stable aliases over
 dated snapshot IDs where the CLI supports them (for example `--model opus`
 rather than a dated Opus ID), since aliases track the current model and do
 not go stale; pin an exact ID only when you need reproducibility across a

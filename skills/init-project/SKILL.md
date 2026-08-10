@@ -89,15 +89,27 @@ account). Check whether the external CLI is available on this machine and
 warn if it is not installed or authenticated — but still write the
 configuration.
 
-**Never hardcode a model flag in `validatorAgent.args`.** The validator's
-identity lives only in `models.validator`; validation workflows resolve that
-intent into the external CLI's own model namespace at invocation time and
-pass the CLI's model flag themselves. Duplicating the model into the args —
-especially as a host-neutral shorthand the CLI does not recognize — causes
-first-run failures and lets the two declarations drift. (The `agent` and
-`authorAgent` blocks are the deliberate exception: the deterministic runner
-spawns them and passes their args verbatim, so their model flags belong
-there, spelled in that CLI's own vocabulary.)
+**Leave the model flag out of `validatorAgent.args`** — let the external CLI
+run its own default. What the validator role needs is a second opinion from a
+different provider, and that provider's default is already uncorrelated with
+the author. Naming a model buys nothing here and costs twice: a host-neutral
+shorthand like `gpt-sol` is not in the CLI's namespace and fails on first
+run, and even a correct name goes stale as the vendor moves on, while the
+default tracks it.
+
+So `models.validator` records intent for humans and nothing enforces it. The
+runner spawns `validatorAgent` verbatim, reads `models` nowhere, and logs the
+validator as its command (`codex exec`) without naming a model. Say this
+plainly when reporting the configuration rather than implying the validator
+runs whatever `models.validator` names.
+
+The `agent` and `authorAgent` blocks work the other way round, and the
+asymmetry is deliberate: there the tier *is* the point. `claude -p` with no
+flag takes the host's configured default — usually a mid-tier model — which
+is exactly the cheap-model-rewrites-expensive-specs failure `authorAgent`
+exists to prevent. Name the model there, in that CLI's own vocabulary,
+preferring a stable alias (`--model opus`) over a dated snapshot ID so it
+tracks the current model instead of pinning a retiring one.
 
 If the user has no preference, record the host's current model for author,
 recommend a distinct validator, and leave the builder for the

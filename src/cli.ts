@@ -22,6 +22,7 @@ import {
   type SkillTarget,
 } from "./install-skills.js";
 import { packageVersion } from "./package-assets.js";
+import { createProjectManifest } from "./project-manifest.js";
 import { countBySeverity, sortBySeverity } from "./findings.js";
 import { validateLoop } from "./validate-loop.js";
 import { validateWorkstreams } from "./validate.js";
@@ -137,15 +138,33 @@ program
     "--pm <manager>",
     `Package manager for the devDependency: ${PACKAGE_MANAGERS.join(", ")} (default: detected from the repository)`,
   )
+  .option(
+    "--no-package-json",
+    "Do not create a placeholder package.json when the directory has none",
+  )
   .action(
     async (options: {
       cwd: string;
       targets: string;
       force: boolean;
       pm?: string;
+      packageJson: boolean;
     }) => {
       const root = resolve(options.cwd);
       const targets: SkillTarget[] = parseTargets(options.targets);
+
+      if (options.packageJson && !existsSync(join(root, "package.json"))) {
+        const manifest = await createProjectManifest(root);
+        if (manifest.created) {
+          console.log(
+            `created package.json (private placeholder, name "${manifest.name}")`,
+          );
+        } else if (manifest.reason === "foreign manifest") {
+          console.warn(
+            `warning ${manifest.foreignManifest} found; skipped creating a package.json for a non-Node project`,
+          );
+        }
+      }
 
       if (existsSync(join(root, "package.json"))) {
         const manager =
@@ -176,7 +195,7 @@ program
         }
       } else {
         console.warn(
-          "warning no package.json found; skipped adding the devDependency (run the CLI via npx, or npm init first)",
+          "warning no package.json found; skipped adding the devDependency (run the CLI via npx @wildorder/program-pipeline)",
         );
       }
 

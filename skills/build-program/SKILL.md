@@ -78,7 +78,7 @@ suggest deleting it.
 Run a dry run and present the output:
 
 ```sh
-npm exec program-pipeline -- build "{program-id}" --dry-run
+npx --yes @wildorder/program-pipeline build "{program-id}" --dry-run
 ```
 
 The plan lists workstreams in dependency order and marks the ones already
@@ -91,7 +91,7 @@ Invoking this workflow *is* the instruction to build. Do not ask the user to
 confirm the plan — report it (Step 3) and start the build in the same turn:
 
 ```sh
-npm exec program-pipeline -- build "{program-id}" --yes
+npx --yes @wildorder/program-pipeline build "{program-id}" --yes
 ```
 
 The single exception: when `requireApprovalBeforeBuild` is `true` in

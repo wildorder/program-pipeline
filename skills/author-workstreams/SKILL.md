@@ -141,7 +141,7 @@ Unless `--no-validate` is present, hand the specs to the packaged convergence
 loop and treat it as a hard gate:
 
 ```sh
-npm exec program-pipeline -- converge "{program-id}"
+npx --yes @wildorder/program-pipeline converge "{program-id}"
 ```
 
 The runner owns the loop: it composes the validator brief itself, alternates

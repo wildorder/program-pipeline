@@ -26,7 +26,7 @@ block. Do not attempt to supplement it.
 Run:
 
 ```sh
-npm exec program-pipeline -- converge "{program-id}"
+npx --yes @wildorder/program-pipeline converge "{program-id}"
 ```
 
 Add `--rounds <n>` (maximum 3) or `--strict` when the user asks. Use
@@ -36,7 +36,7 @@ expected gate result, not a tool failure.
 For a mechanical-only check with no agents involved:
 
 ```sh
-npm exec program-pipeline -- validate "{program-id}" --json
+npx --yes @wildorder/program-pipeline validate "{program-id}" --json
 ```
 
 ## Step 1 — Identify the program

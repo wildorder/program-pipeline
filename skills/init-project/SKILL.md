@@ -93,8 +93,16 @@ Ask the Step 2 and Step 3 questions together in one message when possible.
 ## Step 4 — Run the deterministic initializer
 
 ```sh
-npm exec program-pipeline -- init --cwd "{project-root}"
+npx --yes @wildorder/program-pipeline init --cwd "{project-root}"
 ```
+
+Always invoke the CLI by its full package name. The executable is named
+`program-pipeline`, but the package is `@wildorder/program-pipeline` — a bare
+`npm exec program-pipeline` only resolves when the *shell's* working directory
+already has the package installed, and otherwise queries the registry for a
+package that does not exist and fails with `404 Not Found`. That is the common
+case here, because `init` usually targets a project root that has no
+`node_modules` yet.
 
 Add `--name`, `--stack`, or `--description` only for values the user supplied
 or detection cannot provide. Do not manually reproduce the templates; the CLI
@@ -134,7 +142,7 @@ different project root than the one this skill is running from), ask the
 user which targets they want and run:
 
 ```sh
-npm exec program-pipeline -- install --cwd "{project-root}" --targets {chosen}
+npx --yes @wildorder/program-pipeline install --cwd "{project-root}" --targets {chosen}
 ```
 
 Never use `--force` unless the user explicitly approves replacing a reported

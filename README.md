@@ -10,11 +10,15 @@ validating, building, and documenting engineering programs.
 #    (defaults to all targets: cursor, claude, openclaw, codex, gemini;
 #    narrow with --targets). Commit the generated files so every dev gets
 #    the workflows on git pull.
-npx @wildorder/program-pipeline setup
+npx --yes @wildorder/program-pipeline setup
 
 # 2. In your agent, run the guided setup
 #    /init-project
 ```
+
+Works in an empty directory — no `npm init` first. When the target has no
+`package.json`, `setup` writes a minimal private one so the pipeline can be
+pinned as a devDependency.
 
 `/init-project` interviews you for the project details, runs the deterministic
 `init` scaffolding under the hood, and finishes by pointing you at
@@ -34,17 +38,39 @@ npm install --save-dev @wildorder/program-pipeline
 Run the local executable with `npx`:
 
 ```sh
-npx program-pipeline --help
+npx --yes @wildorder/program-pipeline --help
 ```
+
+Always spell the full scoped package name. The executable is named
+`program-pipeline`, but `npx program-pipeline` (or `npm exec program-pipeline`)
+resolves only from a working directory that already has the package installed;
+anywhere else npm looks up the unscoped name on the registry and fails with
+`404 Not Found`. Every command below works from any directory and prefers a
+local install when one is present.
 
 ## CLI
 
 ### `setup`
 
 One-step onboarding for a project: adds `@wildorder/program-pipeline` as a
-devDependency (skipped with a warning when no `package.json` exists) and then
-runs the skills installer. Accepts the same `--targets` and `--force` options
-as `install`.
+devDependency and then runs the skills installer. Accepts the same `--targets`
+and `--force` options as `install`.
+
+A brand-new project needs no `npm init` first. When the directory has no
+`package.json`, `setup` writes a minimal placeholder — `name` derived from the
+directory, `version` `0.0.0`, `private` `true` — and then installs into it.
+Deliberately not `npm init --yes`: that writes a stub `test` script that fails
+by design, which `init` would pick up as a verify command and fail every build
+on. Two directories are left alone:
+
+- one that already declares another ecosystem (`pyproject.toml`, `go.mod`,
+  `Cargo.toml`, `*.csproj`, and similar) — no `package.json` is invented for a
+  non-Node project;
+- any directory, when `--no-package-json` is passed.
+
+In both cases `setup` reports the skip and still installs the workflow skills;
+run the CLI through `npx @wildorder/program-pipeline` there instead of a pinned
+local install.
 
 The devDependency is added with the project's own package manager, detected
 from the `packageManager` field in `package.json` and then from the lockfile
@@ -57,12 +83,13 @@ Re-running `setup` is also the update path: it bumps the dependency to the
 latest published version and refreshes all unmodified package-generated
 skills to match, leaving hand-edited skills untouched (reported as
 conflicts). Commit the resulting diff. Teams pinned to an older version
-should instead use `npm update` plus `npm exec program-pipeline -- install`.
+should instead use `npm update` plus `npx --yes @wildorder/program-pipeline install`.
 
 ```sh
-npx @wildorder/program-pipeline setup
-npx @wildorder/program-pipeline setup --targets claude
-npx @wildorder/program-pipeline setup --pm pnpm
+npx --yes @wildorder/program-pipeline setup
+npx --yes @wildorder/program-pipeline setup --targets claude
+npx --yes @wildorder/program-pipeline setup --pm pnpm
+npx --yes @wildorder/program-pipeline setup --no-package-json
 ```
 
 ### `init`
@@ -71,8 +98,8 @@ Create the standard program-pipeline structure in a new project, or adopt an
 existing one. Existing files are never overwritten.
 
 ```sh
-npm exec program-pipeline -- init --cwd .
-npm exec program-pipeline -- init --cwd . --name "Acme Dashboard" --stack "TypeScript/Node" --description "Operations dashboards for growing teams."
+npx --yes @wildorder/program-pipeline init --cwd .
+npx --yes @wildorder/program-pipeline init --cwd . --name "Acme Dashboard" --stack "TypeScript/Node" --description "Operations dashboards for growing teams."
 ```
 
 All identity flags are optional: `--name` and `--description` default to the
@@ -97,8 +124,8 @@ Install all packaged workflow skills for one or more supported agents. The
 default target set is `cursor,claude,openclaw,codex,gemini`.
 
 ```sh
-npm exec program-pipeline -- install --cwd .
-npm exec program-pipeline -- install --cwd . --targets "cursor,claude"
+npx --yes @wildorder/program-pipeline install --cwd .
+npx --yes @wildorder/program-pipeline install --cwd . --targets "cursor,claude"
 ```
 
 Skills are installed at:
@@ -132,10 +159,10 @@ structured JSON events to
 `build-logs/{program-id}-build-{timestamp}.jsonl`.
 
 ```sh
-npm exec program-pipeline -- build phase-1 --cwd . --dry-run
-npm exec program-pipeline -- build phase-1 --cwd . --yes
-npm exec program-pipeline -- build phase-1 --cwd . --yes --start-from WS-03
-npm exec program-pipeline -- build phase-1 --cwd . --yes --no-commit
+npx --yes @wildorder/program-pipeline build phase-1 --cwd . --dry-run
+npx --yes @wildorder/program-pipeline build phase-1 --cwd . --yes
+npx --yes @wildorder/program-pipeline build phase-1 --cwd . --yes --start-from WS-03
+npx --yes @wildorder/program-pipeline build phase-1 --cwd . --yes --no-commit
 ```
 
 Configure the runner in `pipeline.config.json`:
@@ -196,8 +223,8 @@ the workstream, and the runner never bypasses hooks to force one through.
 ### Spec validation: the convergence loop
 
 ```sh
-npm exec program-pipeline -- converge phase-1
-npm exec program-pipeline -- converge phase-1 --rounds 3 --strict
+npx --yes @wildorder/program-pipeline converge phase-1
+npx --yes @wildorder/program-pipeline converge phase-1 --rounds 3 --strict
 ```
 
 Each round pairs one **critic**, which reports findings and never edits, with
@@ -331,9 +358,9 @@ that is the guard working as intended.
 Run deterministic validation for a program's manifest and workstream specs.
 
 ```sh
-npm exec program-pipeline -- validate phase-1 --cwd .
-npm exec program-pipeline -- validate phase-1 --cwd . --strict
-npm exec program-pipeline -- validate phase-1 --cwd . --json
+npx --yes @wildorder/program-pipeline validate phase-1 --cwd .
+npx --yes @wildorder/program-pipeline validate phase-1 --cwd . --strict
+npx --yes @wildorder/program-pipeline validate phase-1 --cwd . --json
 ```
 
 ### `doctor`
@@ -342,7 +369,7 @@ Verify that the installed package contains every required skill, template, and
 schema.
 
 ```sh
-npm exec program-pipeline -- doctor
+npx --yes @wildorder/program-pipeline doctor
 ```
 
 ## Installed workflow skills

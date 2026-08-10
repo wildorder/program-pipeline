@@ -90,7 +90,7 @@ export async function loadPipelineConfig(root: string): Promise<PipelineConfig> 
     raw = await readFile(path, "utf8");
   } catch {
     throw new Error(
-      `${PIPELINE_CONFIG_FILE} not found in ${root}; run program-pipeline init first.`,
+      `${PIPELINE_CONFIG_FILE} not found in ${root}; run npx @wildorder/program-pipeline init --cwd "${root}" first.`,
     );
   }
 

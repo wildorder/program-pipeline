@@ -55,12 +55,27 @@ implicit — it is the most consequential configuration in the pipeline:
 1. **Builder** — the agent CLI command (and model) the build runner executes
    for each workstream, for example `claude -p --model sonnet`. Written to
    the `agent` block of `pipeline.config.json`.
-2. **Author** — the model that writes workstream specs in
-   `author-workstreams`. Written to `models.author`.
+2. **Author** — the model that reasons about specs: writing them in
+   `author-workstreams`, then critiquing and rewriting them in the
+   convergence loop. Written to **both** `models.author` and the
+   `authorAgent` block.
 3. **Validator** — the model that independently validates specs. Written to
-   `models.validator`. Recommend a different model or provider than the
-   author to reduce correlated errors; if the user picks the same one, note
-   the tradeoff and respect the choice.
+   `models.validator` and the `validatorAgent` block. Recommend a different
+   model or provider than the author to reduce correlated errors; if the user
+   picks the same one, note the tradeoff and respect the choice.
+
+**Always set `authorAgent`.** `models.author` declares host-neutral intent
+for workflows that switch models *in-host*; it never reaches the packaged
+runner. `converge` spawns a process, so with no `authorAgent` block it
+borrows the build `agent` — putting the deliberately cheap builder in charge
+of critiquing and rewriting the specs a stronger model authored. The runner
+warns when it borrows, but the configuration should never make that
+necessary. Default to the same model as `models.author`, spelled in that
+CLI's own vocabulary, for example
+`{ "command": "claude", "args": ["-p", "--model", "opus"], "promptMode": "stdin" }`.
+Write the block even when the builder and author models happen to coincide
+today: the roles drift apart the first time someone economizes on the
+builder.
 
 **Always set `validatorAgent`.** Alongside `models.validator`, always
 propose and write the external agent command that can run the validator —
@@ -79,10 +94,10 @@ identity lives only in `models.validator`; validation workflows resolve that
 intent into the external CLI's own model namespace at invocation time and
 pass the CLI's model flag themselves. Duplicating the model into the args —
 especially as a host-neutral shorthand the CLI does not recognize — causes
-first-run failures and lets the two declarations drift. (The builder `agent`
-block is the deliberate exception: the deterministic runner passes its args
-verbatim, so the builder's model flag belongs there, spelled in that CLI's
-own vocabulary.)
+first-run failures and lets the two declarations drift. (The `agent` and
+`authorAgent` blocks are the deliberate exception: the deterministic runner
+spawns them and passes their args verbatim, so their model flags belong
+there, spelled in that CLI's own vocabulary.)
 
 If the user has no preference, record the host's current model for author,
 recommend a distinct validator, and leave the builder for the
@@ -121,14 +136,20 @@ override is honored from `~/.program-pipeline/universal-directives.md`, or
 pass `--directives <path>` when the user names a directives file.
 
 After the initializer runs, write the model-role decisions from Step 3 into
-`pipeline.config.json`: the builder into `agent`, and the author and
-validator into `models`, for example:
+`pipeline.config.json` — all three agent blocks plus `models`, for example:
 
 ```json
-"agent": { "command": "claude", "args": ["-p", "--model", "sonnet"] },
+"agent": { "command": "claude", "args": ["-p", "--model", "sonnet"], "promptMode": "stdin" },
+"authorAgent": { "command": "claude", "args": ["-p", "--model", "opus"], "promptMode": "stdin" },
 "validatorAgent": { "command": "codex", "args": ["exec"] },
-"models": { "author": "claude-code/opus", "validator": "gpt-sol" }
+"models": { "author": "opus-5", "validator": "gpt-sol" }
 ```
+
+Before moving on, re-read the file and confirm `authorAgent` and
+`validatorAgent` are both present: `converge` aborts without the validator
+and silently degrades to the build agent without the author. When adopting a
+project whose `pipeline.config.json` already existed, check it for the same
+two blocks and add whichever is missing.
 
 ## Step 5 — Confirm workflow skills are present
 

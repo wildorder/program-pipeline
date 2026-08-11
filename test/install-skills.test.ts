@@ -1,12 +1,22 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  findProjectCopies,
   installSkills,
   parseTargets,
   WORKFLOWS,
 } from "../src/install-skills.js";
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const temporaryRoots: string[] = [];
 
@@ -197,6 +207,222 @@ describe("installSkills", () => {
         }),
       ]),
     );
+  });
+});
+
+describe("installSkills at user scope", () => {
+  it("writes into the resolved home roots, not the project", async () => {
+    const root = await temporaryRoot();
+    const home = join(root, "home");
+
+    const result = await installSkills({
+      cwd: root,
+      home,
+      targets: ["claude", "codex"],
+      scopes: ["user"],
+    });
+
+    expect(result.installed).toHaveLength(WORKFLOWS.length * 2);
+    await expect(
+      readFile(
+        join(home, ".claude", "skills", "build-program", "SKILL.md"),
+        "utf8",
+      ),
+    ).resolves.toContain("program-pipeline:sha256=");
+    // Codex reads the cross-tool tree.
+    await expect(
+      readFile(
+        join(home, ".agents", "skills", "build-program", "SKILL.md"),
+        "utf8",
+      ),
+    ).resolves.toContain("program-pipeline:sha256=");
+    expect(await exists(join(root, ".claude"))).toBe(false);
+  });
+
+  it("honours a per-target root override", async () => {
+    const root = await temporaryRoot();
+    const home = join(root, "home");
+    const custom = join(root, "custom-claude");
+
+    await installSkills({
+      cwd: root,
+      home,
+      targets: ["claude"],
+      scopes: ["user"],
+      roots: { claude: custom },
+    });
+
+    await expect(
+      readFile(join(custom, "plan-program", "SKILL.md"), "utf8"),
+    ).resolves.toContain("program-pipeline:sha256=");
+    expect(await exists(join(home, ".claude", "skills"))).toBe(false);
+  });
+
+  it("writes both scopes when asked, without double-warning about itself", async () => {
+    const root = await temporaryRoot();
+    const home = join(root, "home");
+
+    const result = await installSkills({
+      cwd: root,
+      home,
+      targets: ["claude"],
+      scopes: ["user", "project"],
+    });
+
+    expect(result.installed).toHaveLength(WORKFLOWS.length * 2);
+    expect(result.warnings).toEqual([]);
+    expect(
+      await exists(join(home, ".claude", "skills", "plan-program", "SKILL.md")),
+    ).toBe(true);
+    expect(
+      await exists(join(root, ".claude", "skills", "plan-program", "SKILL.md")),
+    ).toBe(true);
+  });
+
+  it("flags shadowing project copies as package-managed warnings", async () => {
+    const root = await temporaryRoot();
+    const home = join(root, "home");
+    await installSkills({ cwd: root, home, targets: ["claude"] });
+
+    const result = await installSkills({
+      cwd: root,
+      home,
+      targets: ["claude"],
+      scopes: ["user"],
+    });
+
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          scope: "project",
+          kind: "skill",
+          packageManaged: true,
+        }),
+      ]),
+    );
+  });
+});
+
+describe("pruning project copies", () => {
+  it("removes unmodified copies and cleans up the empty directories", async () => {
+    const root = await temporaryRoot();
+    const home = join(root, "home");
+    await installSkills({ cwd: root, home, targets: ["claude"] });
+
+    const result = await installSkills({
+      cwd: root,
+      home,
+      targets: ["claude"],
+      scopes: ["user"],
+      pruneProject: true,
+    });
+
+    expect(result.pruned).toHaveLength(WORKFLOWS.length);
+    expect(result.pruneSkipped).toEqual([]);
+    expect(await exists(join(root, ".claude", "skills"))).toBe(false);
+    expect(
+      await exists(join(home, ".claude", "skills", "plan-program", "SKILL.md")),
+    ).toBe(true);
+  });
+
+  it("keeps copies the user edited and reports them", async () => {
+    const root = await temporaryRoot();
+    const home = join(root, "home");
+    await installSkills({ cwd: root, home, targets: ["claude"] });
+    const edited = join(root, ".claude", "skills", "plan-program", "SKILL.md");
+    const original = await readFile(edited, "utf8");
+    await writeFile(edited, `${original}\nLocal customization.\n`, "utf8");
+
+    const result = await installSkills({
+      cwd: root,
+      home,
+      targets: ["claude"],
+      scopes: ["user"],
+      pruneProject: true,
+    });
+
+    expect(result.pruneSkipped).toEqual([
+      join(".claude", "skills", "plan-program", "SKILL.md"),
+    ]);
+    expect(result.pruned).toHaveLength(WORKFLOWS.length - 1);
+    await expect(readFile(edited, "utf8")).resolves.toContain(
+      "Local customization.",
+    );
+  });
+
+  it("never prunes while the project scope is also a destination", async () => {
+    const root = await temporaryRoot();
+    const home = join(root, "home");
+    await installSkills({ cwd: root, home, targets: ["claude"] });
+
+    const result = await installSkills({
+      cwd: root,
+      home,
+      targets: ["claude"],
+      scopes: ["user", "project"],
+      pruneProject: true,
+    });
+
+    expect(result.pruned).toEqual([]);
+    expect(
+      await exists(join(root, ".claude", "skills", "plan-program", "SKILL.md")),
+    ).toBe(true);
+  });
+
+  it("leaves everything in place when a conflict aborts the install", async () => {
+    const root = await temporaryRoot();
+    const home = join(root, "home");
+    await installSkills({ cwd: root, home, targets: ["claude"] });
+    const blocking = join(
+      home,
+      ".claude",
+      "skills",
+      "plan-program",
+      "SKILL.md",
+    );
+    await mkdir(dirname(blocking), { recursive: true });
+    await writeFile(blocking, "user-authored\n", "utf8");
+
+    const result = await installSkills({
+      cwd: root,
+      home,
+      targets: ["claude"],
+      scopes: ["user"],
+      pruneProject: true,
+    });
+
+    expect(result.aborted).toBe(true);
+    expect(result.pruned).toEqual([]);
+    expect(
+      await exists(join(root, ".claude", "skills", "plan-program", "SKILL.md")),
+    ).toBe(true);
+  });
+});
+
+describe("findProjectCopies", () => {
+  it("separates package-managed copies from edited ones", async () => {
+    const root = await temporaryRoot();
+    const home = join(root, "home");
+    await installSkills({ cwd: root, home, targets: ["claude"] });
+    const edited = join(root, ".claude", "skills", "build-program", "SKILL.md");
+    await writeFile(edited, `${await readFile(edited, "utf8")}\nedit\n`, "utf8");
+
+    const copies = await findProjectCopies(root, ["claude"], { home });
+
+    expect(copies.managed).toHaveLength(WORKFLOWS.length - 1);
+    expect(copies.modified).toEqual([
+      join(".claude", "skills", "build-program", "SKILL.md"),
+    ]);
+  });
+
+  it("reports nothing for a project that was never installed into", async () => {
+    const root = await temporaryRoot();
+
+    const copies = await findProjectCopies(root, ["claude", "cursor"], {
+      home: join(root, "home"),
+    });
+
+    expect(copies).toEqual({ managed: [], modified: [] });
   });
 });
 

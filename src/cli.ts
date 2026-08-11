@@ -14,23 +14,128 @@ import {
 } from "./detect-package-manager.js";
 import { initProject } from "./init-project.js";
 import {
+  ALL_TARGETS,
   DEFAULT_TARGETS,
+  detectTargets,
   doctor,
   installSkills,
+  overrideEnvName,
+  parseRootOverrides,
   parseTargets,
   type InstallSkillsResult,
-  type SkillTarget,
 } from "./install-skills.js";
+import type { PreferredScope } from "./install-prefs.js";
+import { planSkillInstall } from "./install-wizard.js";
 import { packageVersion } from "./package-assets.js";
 import { createProjectManifest } from "./project-manifest.js";
 import { countBySeverity, sortBySeverity } from "./findings.js";
 import { validateLoop } from "./validate-loop.js";
 import { validateWorkstreams } from "./validate.js";
 
+const SCOPES = ["user", "project", "both"] as const;
+
+function parseScope(value: string): PreferredScope {
+  const scope = value.trim().toLowerCase();
+  if (!(SCOPES as readonly string[]).includes(scope)) {
+    throw new Error(
+      `Unknown scope "${value}". Expected: ${SCOPES.join(", ")}.`,
+    );
+  }
+  return scope as PreferredScope;
+}
+
+function collect(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+interface SkillCommandOptions {
+  cwd: string;
+  targets?: string;
+  scope?: string;
+  root: string[];
+  force: boolean;
+  yes: boolean;
+  prune?: boolean;
+}
+
+/** Shared option surface for `install` and `setup`. */
+function withSkillOptions(command: Command): Command {
+  return command
+    .option("--cwd <path>", "Project directory", process.cwd())
+    .option(
+      "--targets <targets>",
+      `Comma-separated targets: ${DEFAULT_TARGETS} (default: detected tools)`,
+    )
+    .option(
+      "--scope <scope>",
+      `Install location: ${SCOPES.join(", ")} (default: user)`,
+    )
+    .option(
+      "--root <target=path>",
+      "Override a target's skills root; repeatable",
+      collect,
+      [],
+    )
+    .option("--force", "Overwrite conflicting skill files", false)
+    .option("--yes", "Accept detected defaults without prompting", false)
+    .option("--prune", "Remove unmodified project-scope copies after a user-scope install")
+    .option("--no-prune", "Keep project-scope copies");
+}
+
+/**
+ * Resolves the plan (prompting when a human is present), runs the install, and
+ * reports it. Returns undefined when the user cancelled or a conflict aborted
+ * the write.
+ */
+async function runSkillInstall(
+  options: SkillCommandOptions,
+  command: Command,
+): Promise<InstallSkillsResult | undefined> {
+  const roots = parseRootOverrides(options.root);
+  const plan = await planSkillInstall({
+    cwd: options.cwd,
+    ...(options.targets === undefined
+      ? {}
+      : { explicitTargets: parseTargets(options.targets) }),
+    ...(options.scope === undefined
+      ? {}
+      : { explicitScope: parseScope(options.scope) }),
+    // Commander gives --prune a value either way, so ask where it came from.
+    ...(command.getOptionValueSource("prune") === "cli"
+      ? { explicitPrune: options.prune ?? false }
+      : {}),
+    roots,
+    yes: options.yes,
+  });
+
+  if (plan.cancelled) {
+    console.log("cancelled; nothing was written");
+    process.exitCode = 130;
+    return undefined;
+  }
+
+  const result = await installSkills({
+    cwd: options.cwd,
+    targets: plan.targets,
+    scopes: plan.scopes,
+    force: options.force,
+    pruneProject: plan.pruneProject,
+    roots,
+  });
+  reportInstall(result);
+  return result.aborted ? undefined : result;
+}
+
 function reportInstall(result: InstallSkillsResult): void {
   for (const path of result.installed) console.log(`installed ${path}`);
   for (const path of result.updated) console.log(`updated ${path}`);
   for (const path of result.skipped) console.log(`unchanged ${path}`);
+  for (const path of result.pruned) console.log(`removed ${path}`);
+  for (const path of result.pruneSkipped) {
+    console.warn(
+      `warning kept ${path}; edited since generation, so it still shadows the user-scope skill`,
+    );
+  }
   for (const warning of result.warnings) {
     const ownership = warning.packageManaged ? "package-managed" : "external";
     console.warn(
@@ -96,44 +201,23 @@ program
     },
   );
 
-program
-  .command("install")
-  .description("Install portable workflow skills into a project")
-  .option("--cwd <path>", "Project directory", process.cwd())
-  .option(
-    "--targets <targets>",
-    `Comma-separated targets: ${DEFAULT_TARGETS}`,
-    DEFAULT_TARGETS,
-  )
-  .option("--force", "Overwrite conflicting skill files", false)
-  .action(
-    async (options: {
-      cwd: string;
-      targets: string;
-      force: boolean;
-    }) => {
-      const targets: SkillTarget[] = parseTargets(options.targets);
-      const result = await installSkills({
-        cwd: options.cwd,
-        targets,
-        force: options.force,
-      });
-      reportInstall(result);
-    },
-  );
+withSkillOptions(
+  program
+    .command("install")
+    .description(
+      "Install portable workflow skills for the agent tools on this machine",
+    ),
+).action(async (options: SkillCommandOptions, command: Command) => {
+  await runSkillInstall(options, command);
+});
 
-program
-  .command("setup")
-  .description(
-    "One-step setup: add the package as a devDependency and install workflow skills",
-  )
-  .option("--cwd <path>", "Project directory", process.cwd())
-  .option(
-    "--targets <targets>",
-    `Comma-separated targets: ${DEFAULT_TARGETS}`,
-    DEFAULT_TARGETS,
-  )
-  .option("--force", "Overwrite conflicting skill files", false)
+withSkillOptions(
+  program
+    .command("setup")
+    .description(
+      "One-step setup: add the package as a devDependency and install workflow skills",
+    ),
+)
   .option(
     "--pm <manager>",
     `Package manager for the devDependency: ${PACKAGE_MANAGERS.join(", ")} (default: detected from the repository)`,
@@ -143,15 +227,11 @@ program
     "Do not create a placeholder package.json when the directory has none",
   )
   .action(
-    async (options: {
-      cwd: string;
-      targets: string;
-      force: boolean;
-      pm?: string;
-      packageJson: boolean;
-    }) => {
+    async (
+      options: SkillCommandOptions & { pm?: string; packageJson: boolean },
+      command: Command,
+    ) => {
       const root = resolve(options.cwd);
-      const targets: SkillTarget[] = parseTargets(options.targets);
 
       if (options.packageJson && !existsSync(join(root, "package.json"))) {
         const manifest = await createProjectManifest(root);
@@ -199,13 +279,8 @@ program
         );
       }
 
-      const result = await installSkills({
-        cwd: root,
-        targets,
-        force: options.force,
-      });
-      reportInstall(result);
-      if (!result.aborted) {
+      const result = await runSkillInstall({ ...options, cwd: root }, command);
+      if (result) {
         console.log(
           "setup complete; run /init-project from your agent to continue",
         );
@@ -215,8 +290,32 @@ program
 
 program
   .command("doctor")
-  .description("Verify packaged templates, schemas, and skills")
-  .action(async () => {
+  .description(
+    "Verify packaged assets and print the resolved skills root for each target",
+  )
+  .option(
+    "--root <target=path>",
+    "Override a target's skills root; repeatable",
+    collect,
+    [],
+  )
+  .action(async (options: { root: string[] }) => {
+    const detected = await detectTargets({ roots: parseRootOverrides(options.root) });
+    const width = Math.max(...detected.map((entry) => entry.label.length));
+
+    console.log("skills roots");
+    for (const entry of detected) {
+      const state = entry.detected ? "detected" : "not detected";
+      console.log(
+        `  ${entry.label.padEnd(width)}  ${entry.userRoot}  [${state}, ${entry.source}]`,
+      );
+    }
+    console.log(
+      `\noverride any row with --root <target>=<path> or ${overrideEnvName(
+        ALL_TARGETS[0] ?? "claude",
+      )}-style environment variables\n`,
+    );
+
     const problems = await doctor();
     if (problems.length === 0) {
       console.log("Program Pipeline package is healthy.");

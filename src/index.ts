@@ -51,16 +51,51 @@ export {
 export {
   ALL_TARGETS,
   DEFAULT_TARGETS,
+  detectTargets,
   doctor,
+  findProjectCopies,
   installSkills,
+  overrideEnvName,
+  parseRootOverrides,
   parseTargets,
   WORKFLOWS,
   type DefinitionWarning,
+  type DetectedTarget,
+  type InstallScope,
   type InstallSkillsOptions,
   type InstallSkillsResult,
+  type ProjectCopies,
+  type RootSource,
   type SkillTarget,
   type Workflow,
 } from "./install-skills.js";
+export {
+  loadInstallPrefs,
+  saveInstallPrefs,
+  PREFS_PATH,
+  type InstallPrefs,
+  type PreferredScope,
+} from "./install-prefs.js";
+export {
+  planSkillInstall,
+  scopesFor,
+  type SkillPlan,
+  type SkillPlanOptions,
+} from "./install-wizard.js";
+export {
+  chooseMany,
+  chooseOne,
+  confirm,
+  defaultStreams,
+  isInteractive,
+  type Choice,
+  type PromptStreams,
+} from "./prompt.js";
+export {
+  scanRoots,
+  type ResolveContext,
+  type ScanRoot,
+} from "./skill-roots.js";
 export {
   at,
   because,

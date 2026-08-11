@@ -128,8 +128,19 @@ describe("packaged CLI end to end", () => {
       expect(doctor.code, doctor.output).toBe(0);
       expect(doctor.output).toContain("healthy");
 
+      // Explicit project scope: the default is user scope, and an e2e run must
+      // never write into the real home directory.
       const install = await runCli(
-        [cli, "install", "--cwd", project, "--targets", "claude"],
+        [
+          cli,
+          "install",
+          "--cwd",
+          project,
+          "--targets",
+          "claude",
+          "--scope",
+          "project",
+        ],
         project,
       );
       expect(install.code, install.output).toBe(0);

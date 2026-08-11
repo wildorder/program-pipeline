@@ -1,8 +1,29 @@
 import { createHash } from "node:crypto";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { PACKAGE_ROOT } from "./package-assets.js";
+import {
+  detectTargets,
+  pathExists,
+  scanRoots,
+  type DetectedTarget,
+  type InstallScope,
+  type SkillTarget,
+} from "./skill-roots.js";
+
+export {
+  ALL_TARGETS,
+  DEFAULT_TARGETS,
+  detectTargets,
+  overrideEnvName,
+  parseRootOverrides,
+  parseTargets,
+  type DetectedTarget,
+  type InstallScope,
+  type RootSource,
+  type SkillTarget,
+} from "./skill-roots.js";
 
 export const WORKFLOWS = [
   "init-project",
@@ -15,19 +36,32 @@ export const WORKFLOWS = [
 ] as const;
 
 export type Workflow = (typeof WORKFLOWS)[number];
-export type SkillTarget = "cursor" | "claude" | "openclaw" | "codex" | "gemini";
 
 export interface InstallSkillsOptions {
   cwd: string;
   targets: SkillTarget[];
   force?: boolean;
   home?: string;
+  /**
+   * Where the skills land. Defaults to project scope so existing programmatic
+   * callers keep their behavior; the CLI chooses user scope explicitly.
+   */
+  scopes?: InstallScope[];
+  /**
+   * Remove project-scope copies that this package generated and the user has
+   * not edited. Project skills shadow user skills in most harnesses, so a
+   * user-scope install is silently ineffective until the stale copies go.
+   */
+  pruneProject?: boolean;
+  /** Per-target root overrides, from `--root <target>=<path>`. */
+  roots?: Partial<Record<SkillTarget, string>>;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface DefinitionWarning {
   workflow: Workflow;
   kind: "command" | "skill";
-  scope: "project" | "user";
+  scope: InstallScope;
   target: SkillTarget;
   path: string;
   packageManaged: boolean;
@@ -39,43 +73,21 @@ export interface InstallSkillsResult {
   skipped: string[];
   conflicts: string[];
   warnings: DefinitionWarning[];
+  /** Project-scope copies removed because their marker proved them unmodified. */
+  pruned: string[];
+  /** Project-scope copies left alone because the user had edited them. */
+  pruneSkipped: string[];
   aborted: boolean;
 }
 
 const MARKER_PATTERN = /<!-- program-pipeline:sha256=([a-f0-9]{64}) -->\n?/u;
-const TARGET_ROOTS: Record<SkillTarget, string> = {
-  cursor: join(".cursor", "skills"),
-  claude: join(".claude", "skills"),
-  openclaw: "skills",
-  // Codex discovers skills in the cross-tool .agents/skills directory.
-  codex: join(".agents", "skills"),
-  gemini: join(".gemini", "skills"),
-};
-export const ALL_TARGETS = Object.keys(TARGET_ROOTS) as SkillTarget[];
-export const DEFAULT_TARGETS = ALL_TARGETS.join(",");
 const COMMAND_EXTENSIONS = [".md", ".mdc", ".markdown", ".txt"] as const;
 
-interface DefinitionRoot {
-  target: SkillTarget;
-  kind: "command" | "skill";
-  scope: "project" | "user";
-  root: string;
-}
-
 interface PlannedWrite {
-  relativePath: string;
+  label: string;
   destination: string;
   desired: string;
   action: "install" | "update" | "skip" | "conflict";
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function normalize(content: string): string {
@@ -105,71 +117,6 @@ function generatedFileIsUnmodified(content: string): boolean {
   return digest(withoutMarker) === marker[1];
 }
 
-export function parseTargets(value: string): SkillTarget[] {
-  const values = value
-    .split(",")
-    .map((target) => target.trim().toLowerCase())
-    .filter(Boolean);
-  const invalid = values.filter(
-    (target) => !Object.hasOwn(TARGET_ROOTS, target),
-  );
-  if (invalid.length > 0) {
-    throw new Error(
-      `Unknown target(s): ${invalid.join(", ")}. Expected: ${ALL_TARGETS.join(", ")}.`,
-    );
-  }
-  return [...new Set(values)] as SkillTarget[];
-}
-
-function definitionRoots(
-  projectRoot: string,
-  userHome: string,
-  targets: SkillTarget[],
-): DefinitionRoot[] {
-  const roots: DefinitionRoot[] = [];
-  if (targets.includes("cursor")) {
-    roots.push(
-      { target: "cursor", kind: "command", scope: "project", root: join(projectRoot, ".cursor", "commands") },
-      { target: "cursor", kind: "command", scope: "user", root: join(userHome, ".cursor", "commands") },
-      { target: "cursor", kind: "skill", scope: "project", root: join(projectRoot, ".cursor", "skills") },
-      { target: "cursor", kind: "skill", scope: "project", root: join(projectRoot, ".agents", "skills") },
-      { target: "cursor", kind: "skill", scope: "project", root: join(projectRoot, ".claude", "skills") },
-      { target: "cursor", kind: "skill", scope: "user", root: join(userHome, ".cursor", "skills") },
-      { target: "cursor", kind: "skill", scope: "user", root: join(userHome, ".agents", "skills") },
-      { target: "cursor", kind: "skill", scope: "user", root: join(userHome, ".claude", "skills") },
-    );
-  }
-  if (targets.includes("claude")) {
-    roots.push(
-      { target: "claude", kind: "command", scope: "project", root: join(projectRoot, ".claude", "commands") },
-      { target: "claude", kind: "command", scope: "user", root: join(userHome, ".claude", "commands") },
-      { target: "claude", kind: "skill", scope: "project", root: join(projectRoot, ".claude", "skills") },
-      { target: "claude", kind: "skill", scope: "user", root: join(userHome, ".claude", "skills") },
-    );
-  }
-  if (targets.includes("openclaw")) {
-    roots.push(
-      { target: "openclaw", kind: "skill", scope: "project", root: join(projectRoot, "skills") },
-      { target: "openclaw", kind: "skill", scope: "user", root: join(userHome, ".openclaw", "skills") },
-      { target: "openclaw", kind: "skill", scope: "user", root: join(userHome, ".openclaw", "workspace", "skills") },
-    );
-  }
-  if (targets.includes("codex")) {
-    roots.push(
-      { target: "codex", kind: "skill", scope: "project", root: join(projectRoot, ".agents", "skills") },
-      { target: "codex", kind: "skill", scope: "user", root: join(userHome, ".agents", "skills") },
-      { target: "codex", kind: "skill", scope: "user", root: join(userHome, ".codex", "skills") },
-    );
-  }
-  if (targets.includes("gemini")) {
-    roots.push(
-      { target: "gemini", kind: "skill", scope: "project", root: join(projectRoot, ".gemini", "skills") },
-      { target: "gemini", kind: "skill", scope: "user", root: join(userHome, ".gemini", "skills") },
-    );
-  }
-  return roots;
-}
-
 function pathKey(path: string): string {
   return process.platform === "win32" ? path.toLowerCase() : path;
 }
@@ -177,13 +124,15 @@ function pathKey(path: string): string {
 async function findDefinitionWarnings(
   projectRoot: string,
   userHome: string,
+  detected: DetectedTarget[],
   targets: SkillTarget[],
   destinations: Set<string>,
 ): Promise<DefinitionWarning[]> {
   const warnings: DefinitionWarning[] = [];
   const seen = new Set<string>();
+  const selected = detected.filter((entry) => targets.includes(entry.target));
 
-  for (const location of definitionRoots(projectRoot, userHome, targets)) {
+  for (const location of scanRoots(selected, projectRoot, userHome)) {
     for (const workflow of WORKFLOWS) {
       const candidates =
         location.kind === "skill"
@@ -194,7 +143,11 @@ async function findDefinitionWarnings(
 
       for (const candidate of candidates) {
         const key = pathKey(candidate);
-        if (destinations.has(key) || seen.has(key) || !(await exists(candidate))) {
+        if (
+          destinations.has(key) ||
+          seen.has(key) ||
+          !(await pathExists(candidate))
+        ) {
           continue;
         }
         seen.add(key);
@@ -218,64 +171,162 @@ async function findDefinitionWarnings(
   return warnings;
 }
 
+/** Best-effort cleanup so pruning does not leave empty scaffolding behind. */
+async function removeIfEmpty(path: string): Promise<void> {
+  try {
+    await rmdir(path);
+  } catch {
+    // Still has content, or never existed. Either way there is nothing to do.
+  }
+}
+
+export interface ProjectCopies {
+  /** Generated by this package and unmodified — safe to remove. */
+  managed: string[];
+  /** Edited since generation, or never ours — only a human should touch these. */
+  modified: string[];
+}
+
+/**
+ * Project-scope skill files for the given targets. Project skills shadow
+ * user-scope ones, so the caller needs this before a user-scope install to
+ * know whether the install would actually take effect.
+ */
+export async function findProjectCopies(
+  cwd: string,
+  targets: SkillTarget[],
+  options: { home?: string; env?: NodeJS.ProcessEnv; roots?: Partial<Record<SkillTarget, string>> } = {},
+): Promise<ProjectCopies> {
+  const root = resolve(cwd);
+  const detected = await detectTargets({
+    home: resolve(options.home ?? homedir()),
+    ...(options.env ? { env: options.env } : {}),
+    ...(options.roots ? { roots: options.roots } : {}),
+  });
+  const copies: ProjectCopies = { managed: [], modified: [] };
+
+  for (const entry of detected) {
+    if (!targets.includes(entry.target)) continue;
+    for (const workflow of WORKFLOWS) {
+      const label = join(entry.projectRoot, workflow, "SKILL.md");
+      const path = join(root, label);
+      if (!(await pathExists(path))) continue;
+      if (generatedFileIsUnmodified(await readFile(path, "utf8"))) {
+        copies.managed.push(label);
+      } else {
+        copies.modified.push(label);
+      }
+    }
+  }
+
+  return copies;
+}
+
+async function pruneProjectCopies(
+  projectRoot: string,
+  detected: DetectedTarget[],
+  targets: SkillTarget[],
+  result: InstallSkillsResult,
+): Promise<void> {
+  for (const entry of detected) {
+    if (!targets.includes(entry.target)) continue;
+    const skillsRoot = join(projectRoot, entry.projectRoot);
+    for (const workflow of WORKFLOWS) {
+      const path = join(skillsRoot, workflow, "SKILL.md");
+      if (!(await pathExists(path))) continue;
+      const label = join(entry.projectRoot, workflow, "SKILL.md");
+      if (generatedFileIsUnmodified(await readFile(path, "utf8"))) {
+        await rm(path);
+        await removeIfEmpty(dirname(path));
+        result.pruned.push(label);
+      } else {
+        result.pruneSkipped.push(label);
+      }
+    }
+    await removeIfEmpty(skillsRoot);
+  }
+}
+
 export async function installSkills(
   input: InstallSkillsOptions,
 ): Promise<InstallSkillsResult> {
   const root = resolve(input.cwd);
   const userHome = resolve(input.home ?? homedir());
+  const scopes = input.scopes ?? ["project"];
   const result: InstallSkillsResult = {
     installed: [],
     updated: [],
     skipped: [],
     conflicts: [],
     warnings: [],
+    pruned: [],
+    pruneSkipped: [],
     aborted: false,
   };
+
+  const detected = await detectTargets({
+    home: userHome,
+    ...(input.env ? { env: input.env } : {}),
+    ...(input.roots ? { roots: input.roots } : {}),
+  });
+  const byTarget = new Map(detected.map((entry) => [entry.target, entry]));
   const plans: PlannedWrite[] = [];
+  const planned = new Set<string>();
 
-  for (const target of input.targets) {
-    for (const workflow of WORKFLOWS) {
-      const relativePath = join(
-        TARGET_ROOTS[target],
-        workflow,
-        "SKILL.md",
-      );
-      const destination = join(root, relativePath);
-      const source = await readFile(
-        join(PACKAGE_ROOT, "skills", workflow, "SKILL.md"),
-        "utf8",
-      );
-      const desired = withMarker(source);
+  for (const scope of scopes) {
+    for (const target of input.targets) {
+      const entry = byTarget.get(target);
+      if (!entry) continue;
+      const skillsRoot =
+        scope === "user" ? entry.userRoot : join(root, entry.projectRoot);
 
-      if (!(await exists(destination))) {
-        plans.push({ relativePath, destination, desired, action: "install" });
-        continue;
-      }
+      for (const workflow of WORKFLOWS) {
+        const destination = join(skillsRoot, workflow, "SKILL.md");
+        const key = pathKey(destination);
+        // Overrides can point two targets at one directory; write it once.
+        if (planned.has(key)) continue;
+        planned.add(key);
 
-      const current = await readFile(destination, "utf8");
-      if (normalize(current) === desired) {
-        plans.push({ relativePath, destination, desired, action: "skip" });
-      } else if (input.force || generatedFileIsUnmodified(current)) {
-        plans.push({ relativePath, destination, desired, action: "update" });
-      } else {
-        plans.push({ relativePath, destination, desired, action: "conflict" });
+        const label =
+          scope === "user"
+            ? destination
+            : join(entry.projectRoot, workflow, "SKILL.md");
+        const source = await readFile(
+          join(PACKAGE_ROOT, "skills", workflow, "SKILL.md"),
+          "utf8",
+        );
+        const desired = withMarker(source);
+
+        if (!(await pathExists(destination))) {
+          plans.push({ label, destination, desired, action: "install" });
+          continue;
+        }
+
+        const current = await readFile(destination, "utf8");
+        if (normalize(current) === desired) {
+          plans.push({ label, destination, desired, action: "skip" });
+        } else if (input.force || generatedFileIsUnmodified(current)) {
+          plans.push({ label, destination, desired, action: "update" });
+        } else {
+          plans.push({ label, destination, desired, action: "conflict" });
+        }
       }
     }
   }
 
-  const destinations = new Set(plans.map(({ destination }) => pathKey(destination)));
   result.warnings = await findDefinitionWarnings(
     root,
     userHome,
+    detected,
     input.targets,
-    destinations,
+    planned,
   );
   result.conflicts = plans
     .filter(({ action }) => action === "conflict")
-    .map(({ relativePath }) => relativePath);
+    .map(({ label }) => label);
   result.skipped = plans
     .filter(({ action }) => action === "skip")
-    .map(({ relativePath }) => relativePath);
+    .map(({ label }) => label);
 
   if (result.conflicts.length > 0) {
     result.aborted = true;
@@ -286,11 +337,17 @@ export async function installSkills(
     if (plan.action === "install") {
       await mkdir(dirname(plan.destination), { recursive: true });
       await writeFile(plan.destination, plan.desired, "utf8");
-      result.installed.push(plan.relativePath);
+      result.installed.push(plan.label);
     } else if (plan.action === "update") {
       await writeFile(plan.destination, plan.desired, "utf8");
-      result.updated.push(plan.relativePath);
+      result.updated.push(plan.label);
     }
+  }
+
+  // Only after a clean user-scope install: pruning first would delete the
+  // developer's working skills if the install then aborted.
+  if (input.pruneProject && scopes.includes("user") && !scopes.includes("project")) {
+    await pruneProjectCopies(root, detected, input.targets, result);
   }
 
   return result;
@@ -300,7 +357,9 @@ export async function doctor(): Promise<string[]> {
   const problems: string[] = [];
   for (const workflow of WORKFLOWS) {
     const path = join(PACKAGE_ROOT, "skills", workflow, "SKILL.md");
-    if (!(await exists(path))) problems.push(`Missing packaged skill: ${workflow}`);
+    if (!(await pathExists(path))) {
+      problems.push(`Missing packaged skill: ${workflow}`);
+    }
   }
   for (const template of [
     "vision.md",
@@ -308,7 +367,7 @@ export async function doctor(): Promise<string[]> {
     "CLAUDE.md",
     "universal-directives.md",
   ]) {
-    if (!(await exists(join(PACKAGE_ROOT, "templates", template)))) {
+    if (!(await pathExists(join(PACKAGE_ROOT, "templates", template)))) {
       problems.push(`Missing packaged template: ${template}`);
     }
   }
@@ -316,7 +375,7 @@ export async function doctor(): Promise<string[]> {
     "manifest.schema.json",
     "pipeline-config.schema.json",
   ]) {
-    if (!(await exists(join(PACKAGE_ROOT, "schemas", schema)))) {
+    if (!(await pathExists(join(PACKAGE_ROOT, "schemas", schema)))) {
       problems.push(`Missing packaged schema: ${schema}`);
     }
   }

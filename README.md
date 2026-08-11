@@ -6,15 +6,18 @@ validating, building, and documenting engineering programs.
 ## Get started
 
 ```sh
-# 1. One-step setup: adds the devDependency and installs the workflow skills
-#    (defaults to all targets: cursor, claude, openclaw, codex, gemini;
-#    narrow with --targets). Commit the generated files so every dev gets
-#    the workflows on git pull.
+# 1. One-step setup: adds the devDependency and installs the workflow skills.
+#    In a terminal it asks which agent tools to install for, pre-selecting the
+#    ones it found on this machine; everywhere else it takes those defaults.
 npx --yes @wildorder/program-pipeline setup
 
 # 2. In your agent, run the guided setup
 #    /init-project
 ```
+
+Skills install **per machine** by default (`~/.claude/skills` and friends), so
+one update covers every repository you work in. Pass `--scope project` to put
+them in the repo instead, where they are committed and pinned per project.
 
 Works in an empty directory — no `npm init` first. When the target has no
 `package.json`, `setup` writes a minimal private one so the pipeline can be
@@ -53,8 +56,8 @@ local install when one is present.
 ### `setup`
 
 One-step onboarding for a project: adds `@wildorder/program-pipeline` as a
-devDependency and then runs the skills installer. Accepts the same `--targets`
-and `--force` options as `install`.
+devDependency and then runs the skills installer. Accepts every option `install`
+does (`--targets`, `--scope`, `--root`, `--force`, `--yes`, `--prune`).
 
 A brand-new project needs no `npm init` first. When the directory has no
 `package.json`, `setup` writes a minimal placeholder — `name` derived from the
@@ -82,12 +85,14 @@ At a pnpm workspace root the dependency is added with `pnpm add -D -w`.
 Re-running `setup` is also the update path: it bumps the dependency to the
 latest published version and refreshes all unmodified package-generated
 skills to match, leaving hand-edited skills untouched (reported as
-conflicts). Commit the resulting diff. Teams pinned to an older version
-should instead use `npm update` plus `npx --yes @wildorder/program-pipeline install`.
+conflicts). At project scope, commit the resulting diff. Teams pinned to an
+older version should instead use `npm update` plus
+`npx --yes @wildorder/program-pipeline install`.
 
 ```sh
 npx --yes @wildorder/program-pipeline setup
 npx --yes @wildorder/program-pipeline setup --targets claude
+npx --yes @wildorder/program-pipeline setup --scope project
 npx --yes @wildorder/program-pipeline setup --pm pnpm
 npx --yes @wildorder/program-pipeline setup --no-package-json
 ```
@@ -120,33 +125,93 @@ packaged with this package.
 
 ### `install`
 
-Install all packaged workflow skills for one or more supported agents. The
-default target set is `cursor,claude,openclaw,codex,gemini`.
+Install the packaged workflow skills for the agent tools you use.
 
 ```sh
-npx --yes @wildorder/program-pipeline install --cwd .
-npx --yes @wildorder/program-pipeline install --cwd . --targets "cursor,claude"
+npx --yes @wildorder/program-pipeline install
+npx --yes @wildorder/program-pipeline install --targets "cursor,claude"
+npx --yes @wildorder/program-pipeline install --scope project --cwd .
 ```
 
-Skills are installed at:
+#### Choosing targets
 
-- Cursor: `.cursor/skills/<skill-name>/SKILL.md`
-- Claude Code: `.claude/skills/<skill-name>/SKILL.md`
-- OpenClaw: `skills/<skill-name>/SKILL.md`
-- Codex: `.agents/skills/<skill-name>/SKILL.md`
-- Gemini CLI: `.gemini/skills/<skill-name>/SKILL.md`
+Run in a terminal with no `--targets`, and `install` asks:
 
-Note that `.agents/skills` is the cross-tool shared directory — some other
-agents (Cursor among them) also read it, so targeting `codex` alongside
-`cursor` can surface the same skill twice in tools that scan both locations.
+```text
+Where should the workflow skills go?
+
+ ❯ ◉ Claude Code  ~/.claude/skills
+   ◉ Cursor       ~/.cursor/skills
+   ◯ Codex        ~/.agents/skills    (not detected)
+   ◯ Gemini CLI   ~/.gemini/skills    (not detected)
+   ◯ OpenClaw     ~/.openclaw/skills  (not detected)
+
+   ↑↓ move · space toggle · a all · enter confirm · esc cancel
+```
+
+Tools whose config directory exists are pre-selected; the rest stay visible so
+you can opt in. A second screen asks for the scope, and your answer is saved to
+`~/.program-pipeline/install.json` so later runs — including npm lifecycle
+hooks — reuse it without asking again.
+
+The wizard is skipped whenever a human is not driving: no TTY on both ends,
+`CI` set in the environment, `--yes`, or an explicit `--targets`. In those cases
+the same defaults apply silently and the chosen targets are printed. This
+matters because the packaged skills and `prepare` hooks invoke this CLI
+themselves — a blocking prompt there would hang.
+
+#### Scope
+
+| `--scope` | Destination | Use when |
+| --- | --- | --- |
+| `user` (default) | `~/.claude/skills/…` | One update per machine covers every repository. |
+| `project` | `.claude/skills/…` under `--cwd` | The repo should carry a pinned copy for the whole team. |
+| `both` | Both of the above | Migrating, or a repo that pins while you also work elsewhere. |
+
+Project-scope skills shadow user-scope ones in most harnesses, so a repo
+carrying an old project-scope install keeps running those copies after you move
+to user scope. `--prune` removes the project copies whose content hash proves
+they are unmodified package output; edited files are always kept and reported.
+Interactive runs offer this automatically when stale copies are found.
+
+#### Where each target reads from
+
+| Target | User scope | Project scope |
+| --- | --- | --- |
+| Claude Code | `~/.claude/skills` | `.claude/skills` |
+| Cursor | `~/.cursor/skills` | `.cursor/skills` |
+| Codex | `~/.agents/skills` | `.agents/skills` |
+| Gemini CLI | `~/.gemini/skills` | `.gemini/skills` |
+| OpenClaw | `~/.openclaw/skills` | `skills` |
+
+`.agents/skills` is the cross-tool shared directory — some other agents (Cursor
+among them) also read it, so targeting `codex` alongside `cursor` can surface
+the same skill twice in tools that scan both locations.
+
+#### Overriding a root
+
+Each target's root is resolved in this order, and `doctor` prints the result:
+
+1. `--root <target>=<path>` (repeatable)
+2. `PROGRAM_PIPELINE_SKILLS_ROOT_<TARGET>` in the environment
+3. The tool's own config-home variable, where one is documented —
+   `CLAUDE_CONFIG_DIR`, `CODEX_HOME`
+4. The default under your home directory
+
+`CODEX_HOME` moves where Codex is *detected* without moving where skills are
+*written*, because Codex reads the shared `.agents` tree rather than its own
+config directory. Layers 1 and 2 exist so an undocumented or unusual layout is
+fixable without waiting on a release.
+
+#### Safety
 
 Before writing, the installer scans matching project and user-level command and
-skill directories for every targeted agent. Alternate definitions
-produce detailed warnings but remain untouched. A user-authored or edited file
-at an installation destination is a blocking conflict: the entire installation
-aborts before writing anything. Identical skills are skipped and unmodified
-package-generated skills update safely. Use `--force` only when you explicitly
-want packaged content to replace destination conflicts.
+skill directories for every targeted agent. Alternate definitions produce
+detailed warnings but remain untouched. A user-authored or edited file at an
+installation destination is a blocking conflict: the entire installation aborts
+before writing anything, and nothing is pruned. Identical skills are skipped and
+unmodified package-generated skills update safely. Use `--force` only when you
+explicitly want packaged content to replace destination conflicts.
 
 ### `build`
 
@@ -371,12 +436,25 @@ npx --yes @wildorder/program-pipeline validate phase-1 --cwd . --json
 
 ### `doctor`
 
-Verify that the installed package contains every required skill, template, and
-schema.
+Print the resolved skills root for every target, then verify that the installed
+package contains every required skill, template, and schema.
 
 ```sh
 npx --yes @wildorder/program-pipeline doctor
 ```
+
+```text
+skills roots
+  Claude Code  /home/dev/.claude/skills    [detected, default]
+  Cursor       /home/dev/.cursor/skills    [detected, default]
+  Codex        /home/dev/.agents/skills    [not detected, default]
+  Gemini CLI   /home/dev/.gemini/skills    [not detected, default]
+  OpenClaw     /home/dev/.openclaw/skills  [not detected, default]
+```
+
+The trailing tag is the detection state and which resolution layer chose the
+path (`flag`, `env`, or `default`) — start here when an install lands somewhere
+your agent does not read.
 
 ## Installed workflow skills
 

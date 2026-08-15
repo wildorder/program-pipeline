@@ -15,13 +15,80 @@ export {
   type VerifyRunner,
 } from "./agent-runner.js";
 export {
+  extractSummary,
+  resolveSummary,
+  summaryContract,
+  summaryEventData,
+  summaryLine,
+  type AgentSummary,
+} from "./agent-summary.js";
+export {
+  archivePathFor,
+  snapshotPathFor,
+  updateAsBuilt,
+  type AsBuiltOptions,
+  type AsBuiltResult,
+} from "./as-built.js";
+export {
+  renderReviewReport,
+  reportPathFor,
+  reviewProgram,
+  type ReviewProgramOptions,
+  type ReviewProgramResult,
+} from "./review-program.js";
+export {
+  composeAuthorBrief,
+  type AuthorBriefSources,
+  type AuthorTarget,
+  type RosterEntry,
+  type WorkstreamScope,
+} from "./author-brief.js";
+export {
+  authorWorkstreams,
+  fitDependencySpecs,
+  parseDeclaration,
+  readScope,
+  type AuthorDeclaration,
+  type AuthorOutcome,
+  type AuthorProgramOptions,
+  type AuthorProgramResult,
+  type AuthorWorkstreamOutcome,
+  type ReconciliationRecord,
+} from "./author-workstreams.js";
+export {
+  describeEdges,
+  reconcileDependencies,
+  writeMergedDependencies,
+  type DeclaredEdges,
+  type DependencyEdge,
+  type ReconcileInput,
+  type ReconcileResult,
+  type UnmetRequirement,
+} from "./reconcile-dependencies.js";
+export {
   buildProgram,
   type BuildOutcome,
   type BuildProgramOptions,
   type BuildProgramResult,
   type PlanEntry,
+  type TestCritiqueRecord,
   type WorkstreamOutcome,
 } from "./build-program.js";
+export {
+  collectCriteria,
+  criteriaGateFailure,
+  criteriaHash,
+  documentPathFor,
+  manifestPathFor,
+  renderCriteriaDocument,
+  reviewCriteria,
+  type CriteriaApproval,
+  type CriteriaOptions,
+  type CriteriaOutcome,
+  type CriteriaResult,
+  type CriteriaStatus,
+  type WorkstreamCriteria,
+} from "./criteria.js";
 export {
   addDevDependencyCommand,
   detectPackageManager,
@@ -33,6 +100,7 @@ export {
 export {
   findCycles,
   stableTopologicalOrder,
+  topologicalLevels,
   type GraphNode,
 } from "./graph.js";
 export {
@@ -58,13 +126,16 @@ export {
   overrideEnvName,
   parseRootOverrides,
   parseTargets,
+  RETIRED_WORKFLOWS,
   WORKFLOWS,
   type DefinitionWarning,
   type DetectedTarget,
   type InstallScope,
   type InstallSkillsOptions,
   type InstallSkillsResult,
+  type KnownWorkflow,
   type ProjectCopies,
+  type RetiredWorkflow,
   type RootSource,
   type SkillTarget,
   type Workflow,

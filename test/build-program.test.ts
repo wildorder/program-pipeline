@@ -9,6 +9,7 @@ import {
   type AgentInvocation,
   type CommandResult,
 } from "../src/build-program.js";
+import { reviewCriteria } from "../src/criteria.js";
 
 const temporaryRoots: string[] = [];
 
@@ -42,6 +43,7 @@ interface FixtureOptions {
   statuses?: Record<string, string>;
   maxRecoveryAttempts?: number;
   verifyRetries?: number;
+  requireCriteriaApproval?: boolean;
 }
 
 async function fixture(options: FixtureOptions = {}): Promise<string> {
@@ -105,7 +107,8 @@ async function fixture(options: FixtureOptions = {}): Promise<string> {
         models: { author: "claude-code/opus", validator: "gpt-sol" },
         verify: options.verify ?? { test: "npm test" },
         ...(options.maxRecoveryAttempts === undefined &&
-        options.verifyRetries === undefined
+        options.verifyRetries === undefined &&
+        options.requireCriteriaApproval === undefined
           ? {}
           : {
               build: {
@@ -115,6 +118,11 @@ async function fixture(options: FixtureOptions = {}): Promise<string> {
                 ...(options.verifyRetries === undefined
                   ? {}
                   : { verifyRetries: options.verifyRetries }),
+                ...(options.requireCriteriaApproval === undefined
+                  ? {}
+                  : {
+                      requireCriteriaApproval: options.requireCriteriaApproval,
+                    }),
               },
             }),
       },
@@ -243,12 +251,14 @@ describe("buildProgram", () => {
       "workstream-start",
       "agent-start",
       "agent-exit",
+      "agent-summary",
       "verify-start",
       "verify-result",
       "workstream-complete",
       "workstream-start",
       "agent-start",
       "agent-exit",
+      "agent-summary",
       "verify-start",
       "verify-result",
       "workstream-complete",
@@ -593,6 +603,42 @@ describe("buildProgram", () => {
     await expect(programStatus(root)).resolves.toBe("failed");
   });
 
+  it("refuses to build until the acceptance criteria are approved", async () => {
+    const root = await fixture({ requireCriteriaApproval: true });
+
+    const blocked = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: pass,
+      verifyRunner: pass,
+    });
+    expect(blocked.result).toBe("ABORTED");
+    expect(blocked.reason).toContain("have not been approved");
+    // The gate is a precondition, so nothing may have run.
+    expect(blocked.outcomes).toEqual([]);
+
+    await reviewCriteria({ cwd: root, programId: "alpha", approve: true });
+
+    const allowed = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: pass,
+      verifyRunner: pass,
+    });
+    expect(allowed.result).toBe("COMPLETE");
+  });
+
+  it("leaves builds alone when criteria approval is not required", async () => {
+    const root = await fixture();
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: pass,
+      verifyRunner: pass,
+    });
+    expect(report.result).toBe("COMPLETE");
+  });
+
   it("reports live progress lines for key events", async () => {
     const root = await fixture();
     const lines: string[] = [];
@@ -613,11 +659,13 @@ describe("buildProgram", () => {
       "WS-01 start: Core (1/2)",
       "WS-01 attempt 1/2: agent running",
       expect.stringContaining("WS-01 agent exited 0 after"),
+      "WS-01 summary: (no summary block) ok",
       "WS-01 verify test: ok",
       expect.stringContaining("WS-01 complete after 1 attempt(s)"),
       "WS-02 start: API (2/2)",
       "WS-02 attempt 1/2: agent running",
       expect.stringContaining("WS-02 agent exited 0 after"),
+      "WS-02 summary: (no summary block) ok",
       "WS-02 verify test: ok",
       expect.stringContaining("WS-02 complete after 1 attempt(s)"),
       expect.stringContaining("build alpha complete: 2 workstream(s)"),

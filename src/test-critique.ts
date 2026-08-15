@@ -1,4 +1,5 @@
 import { runProcess, type AgentRunner } from "./agent-runner.js";
+import { resolveSummary, summaryContract } from "./agent-summary.js";
 import { sortBySeverity, type Finding } from "./findings.js";
 import type { AgentConfig } from "./pipeline-config.js";
 import { applySeverityPolicy } from "./severity-policy.js";
@@ -69,6 +70,8 @@ export interface TestCritiqueResult {
   /** Why the critique did not run, when it did not. */
   skipped?: string;
   findings: Finding[];
+  /** The validator's own account of the review, verbatim. */
+  summary?: string;
 }
 
 export interface TestCritiqueOptions {
@@ -130,6 +133,8 @@ export async function critiqueTests(
     "```diff",
     body,
     "```",
+    "",
+    summaryContract(),
   ].join("\n");
 
   const result = await options.agentRunner({
@@ -157,5 +162,9 @@ export async function critiqueTests(
       workstreamId: options.workstreamId,
     })),
   );
-  return { ran: true, findings: sortBySeverity(findings) };
+  return {
+    ran: true,
+    findings: sortBySeverity(findings),
+    summary: resolveSummary(result.output).text,
+  };
 }

@@ -25,9 +25,25 @@ export {
   type SkillTarget,
 } from "./skill-roots.js";
 
-export const WORKFLOWS = [
-  "init-project",
-  "plan-program",
+/**
+ * The skills that still ship. Both are human-judgment steps that sit outside
+ * the automated loop: deciding what to build, and deciding how the project is
+ * set up. Everything else became a CLI command that composes its own brief.
+ */
+export const WORKFLOWS = ["init-project", "plan-program"] as const;
+
+/**
+ * Skills this package used to install and now removes.
+ *
+ * Their work moved into `author`, `converge`, `review`, `build`, and
+ * `as-built`, which compose their own briefs and spawn clean agents. A stale
+ * copy left in a skills directory keeps instructing an agent to do that work
+ * inside its own session instead — which is precisely the behavior those
+ * commands exist to replace — so leaving them installed would quietly undo
+ * the change. Unmodified copies are deleted; edited ones are reported and
+ * left for a human.
+ */
+export const RETIRED_WORKFLOWS = [
   "author-workstreams",
   "validate-workstreams",
   "review-program",
@@ -36,6 +52,14 @@ export const WORKFLOWS = [
 ] as const;
 
 export type Workflow = (typeof WORKFLOWS)[number];
+export type RetiredWorkflow = (typeof RETIRED_WORKFLOWS)[number];
+export type KnownWorkflow = Workflow | RetiredWorkflow;
+
+/** Every name this package has ever installed, for scanning and cleanup. */
+const ALL_KNOWN_WORKFLOWS: readonly KnownWorkflow[] = [
+  ...WORKFLOWS,
+  ...RETIRED_WORKFLOWS,
+];
 
 export interface InstallSkillsOptions {
   cwd: string;
@@ -59,7 +83,7 @@ export interface InstallSkillsOptions {
 }
 
 export interface DefinitionWarning {
-  workflow: Workflow;
+  workflow: KnownWorkflow;
   kind: "command" | "skill";
   scope: InstallScope;
   target: SkillTarget;
@@ -77,6 +101,10 @@ export interface InstallSkillsResult {
   pruned: string[];
   /** Project-scope copies left alone because the user had edited them. */
   pruneSkipped: string[];
+  /** Retired skills removed because their marker proved them unmodified. */
+  retired: string[];
+  /** Retired skills left in place because the user had edited them. */
+  retiredKept: string[];
   aborted: boolean;
 }
 
@@ -133,7 +161,7 @@ async function findDefinitionWarnings(
   const selected = detected.filter((entry) => targets.includes(entry.target));
 
   for (const location of scanRoots(selected, projectRoot, userHome)) {
-    for (const workflow of WORKFLOWS) {
+    for (const workflow of ALL_KNOWN_WORKFLOWS) {
       const candidates =
         location.kind === "skill"
           ? [join(location.root, workflow, "SKILL.md")]
@@ -207,7 +235,7 @@ export async function findProjectCopies(
 
   for (const entry of detected) {
     if (!targets.includes(entry.target)) continue;
-    for (const workflow of WORKFLOWS) {
+    for (const workflow of ALL_KNOWN_WORKFLOWS) {
       const label = join(entry.projectRoot, workflow, "SKILL.md");
       const path = join(root, label);
       if (!(await pathExists(path))) continue;
@@ -231,7 +259,7 @@ async function pruneProjectCopies(
   for (const entry of detected) {
     if (!targets.includes(entry.target)) continue;
     const skillsRoot = join(projectRoot, entry.projectRoot);
-    for (const workflow of WORKFLOWS) {
+    for (const workflow of ALL_KNOWN_WORKFLOWS) {
       const path = join(skillsRoot, workflow, "SKILL.md");
       if (!(await pathExists(path))) continue;
       const label = join(entry.projectRoot, workflow, "SKILL.md");
@@ -244,6 +272,50 @@ async function pruneProjectCopies(
       }
     }
     await removeIfEmpty(skillsRoot);
+  }
+}
+
+/**
+ * Remove retired skills from every scope this run touched. Called only after
+ * a successful install, for the same reason pruning is: a run that aborted on
+ * a conflict must not have deleted anything.
+ */
+async function retireWorkflows(
+  projectRoot: string,
+  detected: DetectedTarget[],
+  targets: SkillTarget[],
+  scopes: InstallScope[],
+  result: InstallSkillsResult,
+): Promise<void> {
+  const seen = new Set<string>();
+  for (const entry of detected) {
+    if (!targets.includes(entry.target)) continue;
+    for (const scope of scopes) {
+      const skillsRoot =
+        scope === "user"
+          ? entry.userRoot
+          : join(projectRoot, entry.projectRoot);
+      for (const workflow of RETIRED_WORKFLOWS) {
+        const path = join(skillsRoot, workflow, "SKILL.md");
+        const key = pathKey(path);
+        // Root overrides can point two targets at one directory.
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (!(await pathExists(path))) continue;
+
+        const label =
+          scope === "user"
+            ? path
+            : join(entry.projectRoot, workflow, "SKILL.md");
+        if (generatedFileIsUnmodified(await readFile(path, "utf8"))) {
+          await rm(path);
+          await removeIfEmpty(dirname(path));
+          result.retired.push(label);
+        } else {
+          result.retiredKept.push(label);
+        }
+      }
+    }
   }
 }
 
@@ -261,6 +333,8 @@ export async function installSkills(
     warnings: [],
     pruned: [],
     pruneSkipped: [],
+    retired: [],
+    retiredKept: [],
     aborted: false,
   };
 
@@ -343,6 +417,11 @@ export async function installSkills(
       result.updated.push(plan.label);
     }
   }
+
+  // Retired skills go from every scope this run touched, not just the pruned
+  // one: a stale copy anywhere keeps telling an agent to do work that is now
+  // a command.
+  await retireWorkflows(root, detected, input.targets, scopes, result);
 
   // Only after a clean user-scope install: pruning first would delete the
   // developer's working skills if the install then aborted.

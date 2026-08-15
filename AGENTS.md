@@ -56,8 +56,9 @@ of provider or harness.
 ## Project: Program Pipeline
 
 Program Pipeline is a provider-neutral TypeScript CLI and Agent Skills package
-for planning, reviewing, validating, executing, and snapshotting engineering
-programs.
+for planning, authoring, reviewing, validating, executing, and snapshotting
+engineering programs. Planning is interactive; everything downstream is a
+headless command that spawns its own agents.
 
 ### Tech Stack
 
@@ -70,7 +71,13 @@ programs.
 ### Conventions
 
 - Command and workflow IDs are lowercase kebab-case.
-- Deterministic behavior belongs in `src/`; model reasoning belongs in `skills/`.
+- Deterministic behavior **and every agent brief** belong in `src/`. A step
+  that spawns an agent is a CLI command whose brief the package composes, so
+  nothing can quietly narrow it, summarize its result, or grade its own
+  output. `skills/` holds only the two steps where a human decides something:
+  `init-project` and `plan-program`.
+- Every spawned agent ends its reply with a fenced `summary` block, and the
+  runner records that text verbatim. See `src/agent-summary.ts`.
 - Never overwrite user-authored files without explicit `--force`.
 - Keep all workflows provider-neutral and free of product-specific context.
 - Use dependency injection for filesystem boundaries that require unit tests.

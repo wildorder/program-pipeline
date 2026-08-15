@@ -4,7 +4,11 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
+import { updateAsBuilt } from "./as-built.js";
+import { authorWorkstreams } from "./author-workstreams.js";
 import { buildProgram } from "./build-program.js";
+import { reviewCriteria } from "./criteria.js";
+import { reviewProgram } from "./review-program.js";
 import {
   addDevDependencyCommand,
   detectPackageManager,
@@ -31,6 +35,14 @@ import { createProjectManifest } from "./project-manifest.js";
 import { countBySeverity, sortBySeverity } from "./findings.js";
 import { validateLoop } from "./validate-loop.js";
 import { validateWorkstreams } from "./validate.js";
+
+/** Indent a possibly multi-line agent summary under its heading line. */
+function indented(text: string, prefix = "  "): string {
+  return text
+    .split(/\r?\n/u)
+    .map((line) => `${prefix}${line}`)
+    .join("\n");
+}
 
 const SCOPES = ["user", "project", "both"] as const;
 
@@ -131,6 +143,14 @@ function reportInstall(result: InstallSkillsResult): void {
   for (const path of result.updated) console.log(`updated ${path}`);
   for (const path of result.skipped) console.log(`unchanged ${path}`);
   for (const path of result.pruned) console.log(`removed ${path}`);
+  for (const path of result.retired) {
+    console.log(`retired ${path}; its work is now a CLI command`);
+  }
+  for (const path of result.retiredKept) {
+    console.warn(
+      `warning kept ${path}; this skill is retired but you edited it, so it was left alone. It still instructs an agent to do work that is now a command — delete it when you have salvaged anything you need.`,
+    );
+  }
   for (const path of result.pruneSkipped) {
     console.warn(
       `warning kept ${path}; edited since generation, so it still shadows the user-scope skill`,
@@ -326,6 +346,104 @@ program
   });
 
 program
+  .command("author")
+  .description(
+    "Author every workstream spec for a program, one clean agent per workstream, walking dependency levels",
+  )
+  .argument("<program-id>", "Program ID")
+  .option("--cwd <path>", "Project directory", process.cwd())
+  .option(
+    "--only <ids>",
+    "Comma-separated workstream IDs to author",
+    (value: string) =>
+      value
+        .split(",")
+        .map((id) => id.trim().toUpperCase())
+        .filter((id) => id !== ""),
+  )
+  .option("--force", "Re-author specs that already exist", false)
+  .option("--dry-run", "Print the level plan without running anything", false)
+  .option("--json", "Print a machine-readable report", false)
+  .action(
+    async (
+      programId: string,
+      options: {
+        cwd: string;
+        only?: string[];
+        force: boolean;
+        dryRun: boolean;
+        json: boolean;
+      },
+    ) => {
+      const report = await authorWorkstreams({
+        cwd: options.cwd,
+        programId,
+        ...(options.only === undefined ? {} : { only: options.only }),
+        force: options.force,
+        dryRun: options.dryRun,
+        onProgress: (line) => {
+          if (!options.json) console.log(line);
+        },
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        if (report.agent) console.log(`agent ${report.agent}`);
+        report.levels.forEach((level, index) => {
+          console.log(`level ${index + 1}: ${level.join(", ")}`);
+        });
+        for (const outcome of report.outcomes) {
+          const detail = outcome.reason ? ` (${outcome.reason})` : "";
+          console.log(`${outcome.status} ${outcome.id}${detail}`);
+          if (outcome.summary) console.log(indented(outcome.summary));
+          const { dependencies, needs, unmet } = outcome.declaration;
+          if (dependencies.length > 0) {
+            console.log(indented(`declared dependencies: ${dependencies.join(", ")}`));
+          }
+          if (needs.length > 0) {
+            console.log(indented(`needs specs for: ${needs.join(", ")}`));
+          }
+          if (unmet.length > 0) {
+            console.log(indented(`unmet by any workstream: ${unmet.join("; ")}`));
+          }
+        }
+        for (const pass of report.reconciliation) {
+          if (pass.added.length > 0) {
+            console.log(
+              `pass ${pass.pass}: merged ${pass.added.length} undeclared dependency edge(s)`,
+            );
+            for (const edge of pass.added) {
+              console.log(indented(`${edge.workstreamId} -> ${edge.dependsOn}`));
+            }
+          }
+          if (pass.reauthored.length > 0) {
+            console.log(
+              `pass ${pass.pass}: re-authored ${pass.reauthored.join(", ")}`,
+            );
+          }
+        }
+        for (const cycle of report.cycles ?? []) {
+          console.log(`cycle: ${cycle.join(" -> ")}`);
+        }
+        for (const { workstreamId, requirement } of report.unmet ?? []) {
+          console.log(`unmet (${workstreamId}): ${requirement}`);
+        }
+        if (report.eventsPath) console.log(`events ${report.eventsPath}`);
+        console.log(`${report.result}: ${report.programId}`);
+        if (report.reason) console.log(report.reason);
+      }
+      if (
+        report.result === "FAILED" ||
+        report.result === "ABORTED" ||
+        report.result === "REQUIRES_REPLAN"
+      ) {
+        process.exitCode = 1;
+      }
+    },
+  );
+
+program
   .command("build")
   .description(
     "Execute a program's workstreams with the configured agent and verification gates",
@@ -375,6 +493,7 @@ program
         console.log(
           `${outcome.status} ${outcome.id} after ${outcome.attempts} attempt(s)${commit}`,
         );
+        if (outcome.summary) console.log(indented(outcome.summary));
       }
       if (report.eventsPath) console.log(`events ${report.eventsPath}`);
       console.log(`${report.result}: ${report.programId}`);
@@ -430,6 +549,19 @@ program
         console.log(
           `blocker=${counts.blocker} major=${counts.major} minor=${counts.minor} advisory=${counts.advisory}`,
         );
+        // What each agent said it did. The findings list below records what
+        // the critic flagged; this is the only place its reasoning survives.
+        for (const round of result.rounds) {
+          if (round.criticSummary) {
+            console.log(`\nround ${round.round} critic (${round.critic}):`);
+            console.log(indented(round.criticSummary));
+          }
+          if (round.writerSummary && round.writer) {
+            console.log(`round ${round.round} writer (${round.writer}):`);
+            console.log(indented(round.writerSummary));
+          }
+        }
+        if (result.findings.length > 0) console.log("");
         for (const finding of sortBySeverity(result.findings)) {
           const scope = finding.workstreamId ? ` ${finding.workstreamId}` : "";
           const label = finding.code ?? finding.category;
@@ -454,6 +586,120 @@ program
         }
       }
       if (result.result === "FAILED") process.exitCode = 1;
+    },
+  );
+
+program
+  .command("review")
+  .description(
+    "Read-only architecture and integration review of a planned program",
+  )
+  .argument("<program-id>", "Program ID")
+  .option("--cwd <path>", "Project directory", process.cwd())
+  .option("--json", "Print a machine-readable report", false)
+  .action(
+    async (programId: string, options: { cwd: string; json: boolean }) => {
+      const result = await reviewProgram({
+        cwd: options.cwd,
+        programId,
+        onProgress: (line) => {
+          if (!options.json) console.log(line);
+        },
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        if (result.agent) console.log(`reviewer ${result.agent}`);
+        if (result.summary) {
+          console.log("\nreviewer's summary:");
+          console.log(indented(result.summary));
+        }
+        if (result.findings.length > 0) console.log("");
+        for (const finding of sortBySeverity(result.findings)) {
+          const scope = finding.workstreamId ? ` ${finding.workstreamId}` : "";
+          console.log(
+            `[${finding.severity}]${scope} ${finding.subject}: ${finding.message}`,
+          );
+        }
+        if (result.reportPath) console.log(`\nreport ${result.reportPath}`);
+        console.log(`${result.result}: ${result.programId}`);
+        if (result.reason) console.log(result.reason);
+      }
+      // A review reports; it does not pass or fail. Only an unusable review
+      // (no validator, agent crash) is an error.
+      if (result.result === "ABORTED") process.exitCode = 1;
+    },
+  );
+
+program
+  .command("as-built")
+  .description(
+    "Snapshot the system that was actually built, and archive it for the program",
+  )
+  .argument("<program-id>", "Program ID")
+  .option("--cwd <path>", "Project directory", process.cwd())
+  .option("--json", "Print a machine-readable report", false)
+  .action(
+    async (programId: string, options: { cwd: string; json: boolean }) => {
+      const result = await updateAsBuilt({
+        cwd: options.cwd,
+        programId,
+        onProgress: (line) => {
+          if (!options.json) console.log(line);
+        },
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        if (result.agent) console.log(`agent ${result.agent}`);
+        if (result.summary) console.log(indented(result.summary));
+        if (result.snapshotPath) console.log(`snapshot ${result.snapshotPath}`);
+        if (result.archivePath) console.log(`archive ${result.archivePath}`);
+        console.log(`${result.result}: ${result.programId}`);
+        if (result.reason) console.log(result.reason);
+      }
+      if (result.result === "ABORTED") process.exitCode = 1;
+    },
+  );
+
+program
+  .command("criteria")
+  .description(
+    "Collect every workstream's acceptance criteria into one reviewable document, and record approval",
+  )
+  .argument("<program-id>", "Program ID")
+  .option("--cwd <path>", "Project directory", process.cwd())
+  .option("--approve", "Record approval for the criteria as they stand", false)
+  .option("--json", "Print a machine-readable report", false)
+  .action(
+    async (
+      programId: string,
+      options: { cwd: string; approve: boolean; json: boolean },
+    ) => {
+      const result = await reviewCriteria({
+        cwd: options.cwd,
+        programId,
+        approve: options.approve,
+        onProgress: (line) => {
+          if (!options.json) console.log(line);
+        },
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        if (result.documentPath) console.log(`document ${result.documentPath}`);
+        if (result.hash) console.log(`hash ${result.hash}`);
+        if (result.missing && result.missing.length > 0) {
+          console.log(`no acceptance criteria: ${result.missing.join(", ")}`);
+        }
+        console.log(`${result.result}: ${result.programId}`);
+        if (result.reason) console.log(result.reason);
+      }
+      if (result.result === "ABORTED") process.exitCode = 1;
+      else if (result.result === "REVIEW_REQUIRED") process.exitCode = 2;
     },
   );
 

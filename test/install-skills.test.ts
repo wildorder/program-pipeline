@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -6,8 +7,33 @@ import {
   findProjectCopies,
   installSkills,
   parseTargets,
+  RETIRED_WORKFLOWS,
   WORKFLOWS,
 } from "../src/install-skills.js";
+
+/**
+ * Reproduces the installer's provenance marker, so a test can plant a file
+ * that an older version of this package would have written.
+ */
+function withMarker(body: string): string {
+  const normalized = body.replaceAll("\r\n", "\n");
+  const hash = createHash("sha256").update(normalized).digest("hex");
+  const insertAt = normalized.indexOf("\n---\n", 4) + 5;
+  return `${normalized.slice(0, insertAt)}<!-- program-pipeline:sha256=${hash} -->\n${normalized.slice(insertAt)}`;
+}
+
+async function plantRetiredSkill(
+  skillsRoot: string,
+  name: string,
+  options: { edited?: boolean } = {},
+): Promise<string> {
+  const body = `---\nname: ${name}\ndescription: A skill an older install wrote.\n---\n\n# ${name}\n\nAuthor the specs yourself in this session.\n`;
+  const content = withMarker(body);
+  await mkdir(join(skillsRoot, name), { recursive: true });
+  const path = join(skillsRoot, name, "SKILL.md");
+  await writeFile(path, options.edited ? `${content}\nMy own note.\n` : content, "utf8");
+  return path;
+}
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -53,13 +79,13 @@ describe("installSkills", () => {
     ).resolves.toContain("program-pipeline:sha256=");
     await expect(
       readFile(
-        join(root, ".agents", "skills", "build-program", "SKILL.md"),
+        join(root, ".agents", "skills", "init-project", "SKILL.md"),
         "utf8",
       ),
     ).resolves.toContain("program-pipeline:sha256=");
     await expect(
       readFile(
-        join(root, ".gemini", "skills", "update-as-built", "SKILL.md"),
+        join(root, ".gemini", "skills", "plan-program", "SKILL.md"),
         "utf8",
       ),
     ).resolves.toContain("program-pipeline:sha256=");
@@ -225,14 +251,14 @@ describe("installSkills at user scope", () => {
     expect(result.installed).toHaveLength(WORKFLOWS.length * 2);
     await expect(
       readFile(
-        join(home, ".claude", "skills", "build-program", "SKILL.md"),
+        join(home, ".claude", "skills", "plan-program", "SKILL.md"),
         "utf8",
       ),
     ).resolves.toContain("program-pipeline:sha256=");
     // Codex reads the cross-tool tree.
     await expect(
       readFile(
-        join(home, ".agents", "skills", "build-program", "SKILL.md"),
+        join(home, ".agents", "skills", "plan-program", "SKILL.md"),
         "utf8",
       ),
     ).resolves.toContain("program-pipeline:sha256=");
@@ -404,14 +430,14 @@ describe("findProjectCopies", () => {
     const root = await temporaryRoot();
     const home = join(root, "home");
     await installSkills({ cwd: root, home, targets: ["claude"] });
-    const edited = join(root, ".claude", "skills", "build-program", "SKILL.md");
+    const edited = join(root, ".claude", "skills", "plan-program", "SKILL.md");
     await writeFile(edited, `${await readFile(edited, "utf8")}\nedit\n`, "utf8");
 
     const copies = await findProjectCopies(root, ["claude"], { home });
 
     expect(copies.managed).toHaveLength(WORKFLOWS.length - 1);
     expect(copies.modified).toEqual([
-      join(".claude", "skills", "build-program", "SKILL.md"),
+      join(".claude", "skills", "plan-program", "SKILL.md"),
     ]);
   });
 
@@ -423,6 +449,89 @@ describe("findProjectCopies", () => {
     });
 
     expect(copies).toEqual({ managed: [], modified: [] });
+  });
+});
+
+describe("retired workflows", () => {
+  it("no longer ships the skills whose work became a command", () => {
+    // Belt and braces: a name in both lists would install and then delete
+    // itself on every run.
+    for (const retired of RETIRED_WORKFLOWS) {
+      expect(WORKFLOWS).not.toContain(retired);
+    }
+    expect(RETIRED_WORKFLOWS).toContain("author-workstreams");
+    expect(RETIRED_WORKFLOWS).toContain("build-program");
+  });
+
+  it("removes an unmodified retired skill an older install left behind", async () => {
+    const root = await temporaryRoot();
+    const home = join(root, "home");
+    const planted = await plantRetiredSkill(
+      join(root, ".claude", "skills"),
+      "author-workstreams",
+    );
+
+    const result = await installSkills({ cwd: root, home, targets: ["claude"] });
+
+    expect(result.retired).toContain(
+      join(".claude", "skills", "author-workstreams", "SKILL.md"),
+    );
+    expect(await exists(planted)).toBe(false);
+    // Its directory goes too, rather than leaving empty scaffolding.
+    expect(
+      await exists(join(root, ".claude", "skills", "author-workstreams")),
+    ).toBe(false);
+  });
+
+  it("keeps an edited retired skill and reports it instead of deleting", async () => {
+    const root = await temporaryRoot();
+    const home = join(root, "home");
+    const planted = await plantRetiredSkill(
+      join(root, ".claude", "skills"),
+      "build-program",
+      { edited: true },
+    );
+
+    const result = await installSkills({ cwd: root, home, targets: ["claude"] });
+
+    expect(result.retiredKept).toContain(
+      join(".claude", "skills", "build-program", "SKILL.md"),
+    );
+    expect(result.retired).not.toContain(
+      join(".claude", "skills", "build-program", "SKILL.md"),
+    );
+    await expect(readFile(planted, "utf8")).resolves.toContain("My own note.");
+  });
+
+  it("removes retired skills at user scope too", async () => {
+    const root = await temporaryRoot();
+    const home = join(root, "home");
+    const planted = await plantRetiredSkill(
+      join(home, ".claude", "skills"),
+      "update-as-built",
+    );
+
+    const result = await installSkills({
+      cwd: root,
+      home,
+      targets: ["claude"],
+      scopes: ["user"],
+    });
+
+    expect(result.retired).toContain(planted);
+    expect(await exists(planted)).toBe(false);
+  });
+
+  it("reports nothing when no retired skill is installed", async () => {
+    const root = await temporaryRoot();
+    const result = await installSkills({
+      cwd: root,
+      home: join(root, "home"),
+      targets: ["claude"],
+    });
+
+    expect(result.retired).toEqual([]);
+    expect(result.retiredKept).toEqual([]);
   });
 });
 

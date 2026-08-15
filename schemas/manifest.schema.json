@@ -59,6 +59,21 @@
             "enum": ["not_started", "in_progress", "complete", "failed"]
           },
           "size": { "enum": ["S", "M", "L"] },
+          "scope": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "summary": { "type": "string", "minLength": 1 },
+              "includes": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "excludes": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              }
+            }
+          },
           "dependencies": {
             "type": "array",
             "uniqueItems": true,
@@ -74,6 +89,16 @@
     "outOfScope": {
       "type": "array",
       "items": { "type": "string" }
+    },
+    "criteriaApproval": {
+      "description": "Human sign-off on this program's acceptance criteria, keyed to a content hash of the criteria themselves so editing one lapses the approval.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["hash", "approvedAt"],
+      "properties": {
+        "hash": { "type": "string", "minLength": 1 },
+        "approvedAt": { "type": "string", "minLength": 1 }
+      }
     }
   }
 }

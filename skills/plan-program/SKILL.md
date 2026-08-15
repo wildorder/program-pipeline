@@ -117,6 +117,11 @@ If `docs/programs/` contains an existing `*-manifest.json`, match its schema exa
       "taskFile": "tasks/{program-id}/{ws-id}-{slug}.md",
       "status": "not_started",
       "size": "S|M|L",
+      "scope": {
+        "summary": "{one line: what this workstream owns}",
+        "includes": ["{specific thing it covers}"],
+        "excludes": ["{specific thing it deliberately does not cover}"]
+      },
       "dependencies": [],
       "packages": []
     }
@@ -127,6 +132,33 @@ If `docs/programs/` contains an existing `*-manifest.json`, match its schema exa
 
 Save it directly to `docs/programs/{program-id}-manifest.json`.
 
+### Scope is load-bearing, not decoration
+
+`scope` is required. `program-pipeline author` refuses to run without a
+`scope.summary` on every workstream, and the reason is worth understanding
+before you write them.
+
+Authoring spawns one clean agent per workstream, and every one of those
+agents is handed the roster of the whole program — each workstream's id,
+name, and scope, and nothing else. That roster is how an author discovers
+that another workstream already owns something it was about to build, or
+produces something it needs. An author that cannot tell what `WS-12` covers
+will not merely omit a dependency; it will reimplement WS-12's work.
+
+So write these for a reader who has no other information about that
+workstream:
+
+- **`summary`** — one line naming what it owns. "Auth improvements" tells an
+  author nothing. "Issues, rotates, and validates auth tokens" tells it
+  everything it needs to decide whether to depend on this.
+- **`includes`** — the specific capabilities inside the boundary.
+- **`excludes`** — the specific capabilities deliberately outside it. These
+  carry more weight than they look. An exclusion tells every other author
+  that something is *not* covered here, which prevents both duplicated work
+  and a requirement that silently belongs to nobody. If a workstream's
+  neighbors might reasonably assume it handles something, say that it does
+  not.
+
 ## 5. Hand off for review
 
 Both files now exist on disk. Reply with a short summary only — program
@@ -134,7 +166,17 @@ scope in a sentence, workstream count, critical path, and links to the two
 file paths — and invite the user to review the files and request changes.
 Apply any requested edits to the files in place.
 
-Do not create workstream specs in this workflow. That belongs to `author-workstreams`.
+Do not create workstream specs in this workflow, and do not offer to. Specs
+are written by the packaged runner, one clean agent per workstream:
+
+```sh
+npx --yes @wildorder/program-pipeline author "{program-id}"
+```
+
+Point the user at that command and stop. Authoring a spec inside this session
+would write it in a context already carrying the whole planning conversation,
+compose its own instructions, and then grade its own output — which is what
+the command exists to prevent.
 
 ## Rules
 
@@ -143,3 +185,6 @@ Do not create workstream specs in this workflow. That belongs to `author-workstr
 - Split a workstream that touches more than eight core files.
 - List every package or directory each workstream touches.
 - Use stable `SC-xx` success-criteria IDs for downstream traceability.
+- Give every workstream a `scope` with a specific `summary`, and state
+  `excludes` wherever a neighbor might reasonably assume coverage. Authoring
+  reads these and refuses to run without them.

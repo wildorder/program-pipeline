@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { summaryContract } from "./agent-summary.js";
 import {
   FINDING_CATEGORIES,
   type Finding,
@@ -255,6 +256,8 @@ export function composeCriticBrief(
     sourceSection(sources),
     "",
     outputContract(),
+    "",
+    summaryContract(),
   ]
     .filter((part) => part !== "")
     .join("\n");
@@ -312,5 +315,7 @@ export function composeWriterBrief(
     "```",
     "",
     "Every finding id must appear in exactly one of the two lists.",
+    "",
+    summaryContract(),
   ].join("\n");
 }

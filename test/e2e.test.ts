@@ -146,7 +146,7 @@ describe("packaged CLI end to end", () => {
       expect(install.code, install.output).toBe(0);
       await expect(
         readFile(
-          join(project, ".claude", "skills", "build-program", "SKILL.md"),
+          join(project, ".claude", "skills", "plan-program", "SKILL.md"),
           "utf8",
         ),
       ).resolves.toContain("program-pipeline:sha256=");

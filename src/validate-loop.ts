@@ -9,6 +9,11 @@ import {
   type AgentRunner,
 } from "./agent-runner.js";
 import {
+  resolveSummary,
+  summaryLine,
+  type AgentSummary,
+} from "./agent-summary.js";
+import {
   FINDING_CATEGORIES,
   fingerprint,
   haltsConvergence,
@@ -65,6 +70,13 @@ export interface RoundRecord {
   fresh: number;
   applied: number;
   rejected: number;
+  /**
+   * What each agent said it did, verbatim. The findings list records *what*
+   * the critic flagged; this is the only place its reasoning survives — the
+   * parser keeps the structured block and discards everything around it.
+   */
+  criticSummary?: string;
+  writerSummary?: string;
 }
 
 /** Which agent held which role, so the choice is visible without reading source. */
@@ -394,6 +406,9 @@ export async function validateLoop(
       );
     }
 
+    const criticSummary: AgentSummary = resolveSummary(criticResult.output);
+    progress(`round ${round}: critic says: ${summaryLine(criticSummary)}`);
+
     const raised = applySeverityPolicy(
       parseCriticFindings(criticResult.output),
     ).map(identify);
@@ -425,6 +440,7 @@ export async function validateLoop(
         fresh: fresh.length,
         applied: 0,
         rejected: 0,
+        criticSummary: criticSummary.text,
       });
       outcome = "requires-replan";
       reason = `${replan.length} finding(s) cannot be fixed by editing specs; the program needs replanning.`;
@@ -442,6 +458,7 @@ export async function validateLoop(
         fresh: 0,
         applied: 0,
         rejected: 0,
+        criticSummary: criticSummary.text,
       });
       outcome = "converged";
       reason = `Round ${round} produced no new blocker or major findings.`;
@@ -467,6 +484,9 @@ export async function validateLoop(
         { rounds, strict, findings: [...seen.values()] },
       );
     }
+
+    const writerSummary = resolveSummary(writerResult.output);
+    progress(`round ${round}: writer says: ${summaryLine(writerSummary)}`);
 
     const verdict = parseWriterVerdict(writerResult.output);
     for (const { id, reason: declined } of verdict.rejected) {
@@ -500,6 +520,8 @@ export async function validateLoop(
       fresh: fresh.length,
       applied: verdict.applied.length,
       rejected: verdict.rejected.length,
+      criticSummary: criticSummary.text,
+      writerSummary: writerSummary.text,
     });
   }
 

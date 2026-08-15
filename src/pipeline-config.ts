@@ -51,6 +51,12 @@ export const pipelineConfigSchema = z.object({
       commit: z.boolean().default(true),
       /** Critique the workstream diff's tests before the runner commits. */
       critiqueTests: z.boolean().default(false),
+      /**
+       * Refuse to build until this program's acceptance criteria have been
+       * approved. Off by default because turning it on retroactively would
+       * block every existing project's next build; new projects opt in.
+       */
+      requireCriteriaApproval: z.boolean().default(false),
     })
     .default({
       maxRecoveryAttempts: 1,
@@ -58,6 +64,34 @@ export const pipelineConfigSchema = z.object({
       logDir: "build-logs",
       commit: true,
       critiqueTests: false,
+      requireCriteriaApproval: false,
+    }),
+  author: z
+    .object({
+      /**
+       * Agents spawned at once inside one dependency level. Authoring fans
+       * out one clean agent per workstream, so an unbounded level would
+       * launch as many agent CLIs as the level is wide.
+       */
+      concurrency: z.number().int().min(1).default(4),
+      /**
+       * Character budget for the full dependency specs carried in one
+       * authoring brief. Past it the largest are cut to their roster entry —
+       * a wide fan-in, not a deep chain, is what makes a brief large.
+       */
+      maxDependencySpecChars: z.number().int().min(1000).default(120_000),
+      /**
+       * Authoring passes before churn is called. Each pass merges the edges
+       * its authors declared and re-authors whatever asked for a spec it did
+       * not have. Edges only ever grow, so this terminates on its own; the
+       * cap is for an agent that keeps asking for the same thing.
+       */
+      maxReconcilePasses: z.number().int().min(1).default(3),
+    })
+    .default({
+      concurrency: 4,
+      maxDependencySpecChars: 120_000,
+      maxReconcilePasses: 3,
     }),
   validate: z
     .object({

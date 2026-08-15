@@ -25,8 +25,17 @@ pinned as a devDependency.
 
 `/init-project` interviews you for the project details, runs the deterministic
 `init` scaffolding under the hood, and finishes by pointing you at
-`/plan-program` to plan your first program. From there the flow is:
-plan → author workstreams → validate → review → build → update as-built.
+`/plan-program` to plan your first program. From there everything is a CLI
+command you run from a terminal or CI, not from inside a chat session:
+
+```sh
+npx --yes @wildorder/program-pipeline author phase-1
+npx --yes @wildorder/program-pipeline converge phase-1
+npx --yes @wildorder/program-pipeline review phase-1
+npx --yes @wildorder/program-pipeline criteria phase-1 --approve
+npx --yes @wildorder/program-pipeline build phase-1
+npx --yes @wildorder/program-pipeline as-built phase-1
+```
 
 ## Install
 
@@ -213,6 +222,94 @@ before writing anything, and nothing is pruned. Identical skills are skipped and
 unmodified package-generated skills update safely. Use `--force` only when you
 explicitly want packaged content to replace destination conflicts.
 
+### `author`
+
+Write every workstream spec for a program, one clean agent per workstream.
+
+```sh
+npx --yes @wildorder/program-pipeline author phase-1 --cwd . --dry-run
+npx --yes @wildorder/program-pipeline author phase-1 --cwd .
+npx --yes @wildorder/program-pipeline author phase-1 --cwd . --only WS-03,WS-07 --force
+```
+
+Authoring every spec in one session degrades the later ones: workstream eight
+gets written in a context already carrying one through seven. A fresh agent
+per workstream fixes that — but a flat fan-out replaces it with a worse
+problem, because two dependent workstreams authored in isolation disagree
+about the interface between them and nobody finds out until build.
+
+So the fan-out walks **dependency levels**. Independent workstreams author
+concurrently; a workstream that depends on another waits and is given that
+one's finished spec. The edge is directional, so there is nothing to
+negotiate: the producer decided, and the consumer conforms.
+
+**Discovery is separate from conformance.** Every brief carries the full
+roster — the id, name, and scope of every workstream in the program —
+because an author that cannot see a workstream exists does not merely omit
+the dependency, it reimplements that workstream's work. Knowing a node exists
+costs a few lines; conforming to it costs its whole spec, and is paid only
+for declared dependencies. The brief says so explicitly: the roster tells an
+author what exists, not how it works, and an author that needs to conform is
+told to ask rather than guess.
+
+Each author returns a declaration alongside its summary:
+
+| Field | Meaning | What the runner does |
+| --- | --- | --- |
+| `dependencies` | every workstream this spec consumes output from | merged into the manifest |
+| `needs` | a dependency whose spec it did not have | re-authored with that spec in hand |
+| `unmet` | a requirement no workstream provides | a coverage gap: back to planning |
+
+**Discovered edges are reconciled, not raised as findings.** A finding is a
+problem someone must resolve; a discovered dependency is not a problem. If a
+spec consumes another workstream's output then the edge exists and the
+manifest is simply out of date — correcting it is transcription, and routing
+transcription through a human gate is what made validation stall on "WS-07
+depends on WS-03, go fix the manifest." So the runner merges declared edges
+into the manifest itself and logs what it merged.
+
+Exactly two outcomes still stop for a human, and neither is about an edge:
+
+- **A cycle.** Two workstreams that depend on each other are not badly
+  recorded, they are badly decomposed — they are one workstream, or the split
+  is in the wrong place. The run ends `REQUIRES_REPLAN` and the manifest is
+  left **unchanged**, since a cyclic manifest is one neither `validate` nor
+  `build` can order.
+- **An unmet requirement.** Work the program needs that no workstream
+  provides is missing scope, which is a planning decision. The run ends
+  `REQUIRES_REPLAN`; valid edges are still merged first.
+
+Everything else settles on its own. A workstream that named `needs` is
+re-authored with that spec in hand, levels are recomputed, and the loop
+repeats until no author asks for anything — bounded by
+`author.maxReconcilePasses` (default 3). It terminates because declared edges
+only ever grow; the cap exists for an agent that keeps asking for the same
+thing, and hitting it fails the run rather than looping.
+
+This is why `author` requires `scope` on every workstream in the manifest
+(`summary`, plus optional `includes` and `excludes`) and refuses to run
+without it — a workstream with no scope is invisible in the roster. An
+exclusion carries more weight than it looks: it tells other authors that
+something is *deliberately* not covered, which prevents both duplicated work
+and a silently missing requirement. `/plan-program` produces these.
+
+Tune the fan-out under `author` in `pipeline.config.json`:
+
+```json
+{ "author": { "concurrency": 4, "maxDependencySpecChars": 120000 } }
+```
+
+`concurrency` bounds agents spawned at once inside one level. When a
+workstream's direct dependency specs exceed `maxDependencySpecChars`, the
+largest are cut back to their roster entry and the run says which — a wide
+fan-in, not a deep chain, is what makes a brief large. A demoted dependency
+is still visible in the roster, so the author can ask for it back through
+`needs`.
+
+A level that does not fully succeed stops the run: later levels read the
+specs it was supposed to produce. Specs that already exist are skipped unless
+`--force` is passed, so a failed run resumes without redoing work.
+
 ### `build`
 
 Execute a program's workstreams in dependency order with the configured agent.
@@ -284,6 +381,38 @@ accepted so resuming after a failure needs no cleanup. A commit that git
 itself refuses — a rejecting hook, an unset `user.email` — is reported as
 `commit failed` and leaves the verified changes in the tree; it never fails
 the workstream, and the runner never bypasses hooks to force one through.
+
+### Agent summaries
+
+Every agent the runner spawns is asked to end its reply with a fenced
+`summary` block, and the runner reads that block back **verbatim** — it is
+never paraphrased, and nothing sits between the agent and the log to
+paraphrase it.
+
+This closes the gap in the other direction from the composed brief. Agent
+output previously had two destinations: a machine parse (findings, verdicts)
+or a failure path. A workstream that passed surfaced nothing about what the
+agent concluded, and the critic's reasoning was discarded the moment its
+findings were parsed out — you learned *what* it flagged, never *why it
+thought so*.
+
+Summaries surface in three places:
+
+- live on the progress stream, as each agent exits;
+- in the events log as an `agent-summary` event carrying `role`, the text,
+  and `promptBytes`;
+- in the final report — under each workstream for `build`, and per round as
+  `criticSummary` / `writerSummary` for `converge`.
+
+`promptBytes` is deliberate telemetry. Brief size is the input to every
+decision about how much context an agent can be given, and estimating it from
+spec line counts is guesswork; recording it per invocation makes it a
+measurement after one real run.
+
+A missing block never fails anything. The runner falls back to the tail of
+the agent's output, marks it `(no summary block)`, and carries on — an agent
+that forgets a fence still did the work, and failing a verified workstream
+over a formatting slip would trade a real result for a cosmetic one.
 
 ### Spec validation: the convergence loop
 
@@ -424,6 +553,93 @@ declared-files check still applies), and deliberately re-running an
 already-implemented workstream via `--start-from` will fail as a no-op —
 that is the guard working as intended.
 
+### `review`
+
+Read-only architecture and integration review of a planned program.
+
+```sh
+npx --yes @wildorder/program-pipeline review phase-1 --cwd .
+```
+
+Runs the `validatorAgent`, never the author — a reviewer that is the same
+model as the author is reviewing its own taste. It reports and never edits:
+mechanical checks belong to `validate` and spec repair belongs to `converge`,
+so what is left for a review is the class of problem that only shows up when
+you hold the whole program at once — two workstreams defining the same type
+differently, a package no workstream touches, an ordering that cannot work.
+
+Findings go through the same cause-required severity policy as the
+convergence loop, so a review cannot bypass it either: a finding supported
+only by a line count is downgraded to advisory. The report is written to
+`docs/programs/{program-id}-review.md`.
+
+A review reports rather than passes or fails, so it exits `0` even with
+findings. Only an unusable review — no `validatorAgent`, a crashed agent —
+exits `1`.
+
+### `as-built`
+
+Snapshot the system that was actually built.
+
+```sh
+npx --yes @wildorder/program-pipeline as-built phase-1 --cwd .
+```
+
+Runs the build `agent`: this is a codebase scan and a piece of writing, not a
+judgment about someone else's work. The agent writes `docs/as-built.md` by
+reading real source files — entry points, schemas, route registrations,
+infrastructure config — and documenting what exists rather than what the
+program document said would exist.
+
+The runner then archives a copy to `docs/snapshots/as-built-{program-id}.md`
+itself. Copying a file to a versioned path is deterministic, and handing
+deterministic work to a model is how a snapshot ends up quietly differing
+from its archive.
+
+Same no-op guard as everywhere else: an agent that exits cleanly without
+writing the file has not produced a snapshot, and the run aborts.
+
+### `criteria`
+
+Collect every workstream's acceptance criteria into one document, review it,
+and record approval.
+
+```sh
+npx --yes @wildorder/program-pipeline criteria phase-1 --cwd .
+npx --yes @wildorder/program-pipeline criteria phase-1 --cwd . --approve
+```
+
+This is the one human gate the pipeline keeps, and the only one worth having.
+Everything else it checks is fact-shaped — a dependency exists or it does
+not, a verify command exits zero or it does not — and those settle
+themselves. Acceptance criteria encode what "done" means, which is a scoping
+decision, and no amount of model review substitutes for the person who owns
+the outcome saying "yes, that is what I asked for".
+
+Two things follow. It is **batched**: every criterion in the program lands in
+`docs/programs/{program-id}-criteria.md` and is reviewed in one pass, not
+workstream by workstream. And approval is **keyed to a content hash of the
+criteria themselves**, so editing a criterion afterwards lapses the approval
+automatically rather than leaving a stale sign-off attached to text nobody
+agreed to. Editing anything else in a spec — a goal, an implementation step —
+does not.
+
+Run it **after `converge`**, not before: the loop edits specs, so approving
+first would mean re-approving after every round.
+
+Exit codes: `0` approved, `1` aborted, `2` review required.
+
+To make it a real gate, turn it on in `pipeline.config.json`:
+
+```json
+{ "build": { "requireCriteriaApproval": true } }
+```
+
+`build` then refuses to start until the current criteria are approved, and
+refuses again if they change afterwards. It defaults to `false` because
+enabling it retroactively would block the next build of every existing
+project — this is opt-in per project, not a silent change of behavior.
+
 ### `validate`
 
 Run deterministic validation for a program's manifest and workstream specs.
@@ -456,25 +672,42 @@ The trailing tag is the detection state and which resolution layer chose the
 path (`flag`, `env`, or `default`) — start here when an install lands somewhere
 your agent does not read.
 
-## Installed workflow skills
+## Skills, and why there are only two
 
-After running `program-pipeline install`, invoke the skills from your agent's
-command interface in this order as needed:
+Two skills install into your agent. Both are the steps where a human decides
+something:
 
-1. `/init-project` — bootstrap the project structure and templates.
-2. `/plan-program` — turn the vision and current as-built state into a program
-   plan and manifest.
-3. `/author-workstreams` — create self-contained implementation specs and run
-   the validation gate.
-4. `/validate-workstreams` — run the critic/writer convergence loop over the
-   specs, checking coverage, dependencies, traceability, test quality, and
-   build readiness.
-5. `/review-program` — perform a read-only architecture and integration review.
-6. `/build-program` — execute manifest workstreams through the build pipeline.
-7. `/update-as-built` — snapshot the system that was actually built.
+1. `/init-project` — set the project up: greenfield or brownfield, git, and
+   which model fills each of the three roles.
+2. `/plan-program` — turn the vision and current as-built state into a
+   program plan, a manifest, and a scope for every workstream.
 
-The same skill names and workflow semantics are packaged for Cursor, Claude
-Code, OpenClaw, Codex, and Gemini CLI; only their installation roots differ.
+Everything after planning is a CLI command:
+
+```text
+/plan-program        HUMAN   design, scope, decompose
+author               machine one clean agent per workstream, per level
+converge             machine critic/writer spec convergence
+review               machine read-only architecture review
+criteria --approve   HUMAN   the definition of done
+build                machine implement, verify, commit
+as-built             machine snapshot what was actually built
+```
+
+Those steps used to be skills too, and the move out of the agent session is
+the point. A skill runs *inside* whatever agent invoked it, which means the
+orchestrator authored specs in a context already carrying the whole planning
+conversation, composed its own instructions, summarized its own results, and
+then graded its own output. Each of those is a seam, and the commands close
+them: the package composes every brief, spawns a clean agent per unit of
+work, and records what came back verbatim.
+
+An install removes retired skills it finds — the old copies would keep
+telling an agent to do that work in-session. Ones you have edited are
+reported and left alone rather than deleted.
+
+The same skill names and semantics are packaged for Cursor, Claude Code,
+OpenClaw, Codex, and Gemini CLI; only their installation roots differ.
 
 ## Development
 

@@ -21,6 +21,14 @@ import {
   type CommandResult,
   type VerifyRunner,
 } from "./agent-runner.js";
+import {
+  resolveSummary,
+  summaryContract,
+  summaryEventData,
+  summaryLine,
+  type AgentSummary,
+} from "./agent-summary.js";
+import { criteriaGateFailure } from "./criteria.js";
 import type { Finding } from "./findings.js";
 import { stableTopologicalOrder } from "./graph.js";
 import {
@@ -71,6 +79,12 @@ export interface WorkstreamOutcome {
   failedCommand?: string;
   /** Short SHA of the runner's commit for this workstream, when it committed. */
   commit?: string;
+  /**
+   * The agent's own account of its last attempt, verbatim. Present whether
+   * the workstream passed or failed — on a failure it is usually the most
+   * informative line in the whole run.
+   */
+  summary?: string;
 }
 
 export type BuildOutcome =
@@ -87,6 +101,8 @@ export type BuildOutcome =
 export interface TestCritiqueRecord {
   id: string;
   findings: Finding[];
+  /** The validator's own account of the review, verbatim. */
+  summary?: string;
 }
 
 export interface BuildProgramResult {
@@ -299,6 +315,8 @@ RULES:
 - Create files marked (NEW); edit existing files marked (MODIFY).
 - Replace any prior-workstream stub with the complete implementation.
 - Stop and report a blocker rather than silently skipping a requirement.
+
+${summaryContract()}
 `;
 }
 
@@ -319,6 +337,8 @@ ${tail(failureOutput)}
 - Do not commit changes, bypass hooks, or weaken verification. The build runner
   commits your work itself once it passes independent verification; leave the
   changes in the working tree.
+
+${summaryContract()}
 `;
 }
 
@@ -509,6 +529,13 @@ export async function buildProgram(
     };
   }
 
+  // The acceptance-criteria gate is about *what* is being built, so it comes
+  // before the gate about whether to proceed now.
+  if (config.build.requireCriteriaApproval) {
+    const failure = await criteriaGateFailure(root, options.programId);
+    if (failure) return aborted(failure, plan);
+  }
+
   if (config.requireApprovalBeforeBuild && !options.approve) {
     return {
       programId: options.programId,
@@ -675,6 +702,7 @@ export async function buildProgram(
     let failureReason = "";
     let failureOutput = "";
     let verified = false;
+    let lastSummary: AgentSummary | undefined;
 
     await writeWorkstreamStatus(manifestPath, workstream.id, "in_progress");
     await emit("workstream-start", { id: workstream.id, name: workstream.name });
@@ -770,6 +798,17 @@ export async function buildProgram(
           `${workstream.id} agent exited ${agentResult.exitCode} after ${minutesSince(attemptStartMs)}`,
         );
 
+        // Emitted before any pass/fail branching, so the agent's own account
+        // survives every path out of the attempt — a crash, a no-op, and a
+        // failed verify all keep it.
+        lastSummary = resolveSummary(agentResult.output);
+        await emit("agent-summary", {
+          id: workstream.id,
+          attempt: attempts,
+          ...summaryEventData("build", prompt, lastSummary),
+        });
+        progress(`${workstream.id} summary: ${summaryLine(lastSummary)}`);
+
         // A failed prompt delivery fails the attempt regardless of exit code:
         // an agent that never received instructions can exit 0 against an
         // already-green repo and would otherwise be falsely completed.
@@ -814,6 +853,7 @@ export async function buildProgram(
               status: "failed",
               attempts,
               agentExitCodes,
+              ...(lastSummary === undefined ? {} : { summary: lastSummary.text }),
             });
             await emit("build-failed", { id: workstream.id });
             return {
@@ -975,10 +1015,16 @@ export async function buildProgram(
           testCritiques.push({
             id: workstream.id,
             findings: critique.findings,
+            ...(critique.summary === undefined
+              ? {}
+              : { summary: critique.summary }),
           });
           await emit("test-critique", {
             id: workstream.id,
             findings: critique.findings,
+            ...(critique.summary === undefined
+              ? {}
+              : { summary: critique.summary }),
           });
           progress(
             critique.findings.length === 0
@@ -1035,6 +1081,7 @@ export async function buildProgram(
         attempts,
         agentExitCodes,
         ...(commitSha === undefined ? {} : { commit: commitSha }),
+        ...(lastSummary === undefined ? {} : { summary: lastSummary.text }),
       });
     } else {
       await writeWorkstreamStatus(manifestPath, workstream.id, "failed");
@@ -1051,6 +1098,7 @@ export async function buildProgram(
         attempts,
         agentExitCodes,
         ...(failedCommand === undefined ? {} : { failedCommand }),
+        ...(lastSummary === undefined ? {} : { summary: lastSummary.text }),
       });
       await emit("build-failed", { id: workstream.id });
       progress(

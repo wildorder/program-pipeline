@@ -56,7 +56,7 @@ implicit — it is the most consequential configuration in the pipeline:
    for each workstream, for example `claude -p --model sonnet`. Written to
    the `agent` block of `pipeline.config.json`.
 2. **Author** — the model that reasons about specs: writing them in
-   `author-workstreams`, then critiquing and rewriting them in the
+   `program-pipeline author`, then critiquing and rewriting them in the
    convergence loop. Written to **both** `models.author` and the
    `authorAgent` block.
 3. **Validator** — the model that independently validates specs. Written to
@@ -111,9 +111,10 @@ exists to prevent. Name the model there, in that CLI's own vocabulary,
 preferring a stable alias (`--model opus`) over a dated snapshot ID so it
 tracks the current model instead of pinning a retiring one.
 
-If the user has no preference, record the host's current model for author,
-recommend a distinct validator, and leave the builder for the
-`build-program` workflow to configure — but say so explicitly in the report.
+If the user has no preference, record the host's current model for author and
+recommend a distinct validator. The builder can be filled in later, but say
+so explicitly in the report: `program-pipeline build` aborts without an
+`agent` block, so an unset builder is a deferred decision, not a default.
 
 Ask the Step 2 and Step 3 questions together in one message when possible.
 
@@ -185,11 +186,12 @@ skill conflict.
 
 Skip this step for greenfield projects.
 
-1. **Snapshot reality.** Follow the scanning approach of the
-   `update-as-built` skill — entry points, schema files, route registrations,
-   shared contracts, infrastructure config — and write `docs/as-built.md`
-   noting it as the initial adoption snapshot. This grounds all later
-   planning in what actually exists.
+1. **Snapshot reality.** Scan the codebase — entry points, schema files,
+   route registrations, shared contracts, infrastructure config — and write
+   `docs/as-built.md`, noting it as the initial adoption snapshot. This
+   grounds all later planning in what actually exists. (After a program
+   completes, `program-pipeline as-built` does this same job with a spawned
+   agent; here there is no program to snapshot yet.)
 2. **Author the vision.** The CLI scaffolded `docs/vision.md` as a template.
    Draft its real content from the as-built snapshot plus a short interview:
    what the product is for, target users, where it is heading, and what is

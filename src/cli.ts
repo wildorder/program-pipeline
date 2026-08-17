@@ -29,7 +29,7 @@ import {
   type InstallSkillsResult,
 } from "./install-skills.js";
 import type { PreferredScope } from "./install-prefs.js";
-import { planSkillInstall } from "./install-wizard.js";
+import { installArgv, planSkillInstall } from "./install-wizard.js";
 import { packageVersion } from "./package-assets.js";
 import { createProjectManifest } from "./project-manifest.js";
 import { countBySeverity, sortBySeverity } from "./findings.js";
@@ -92,6 +92,17 @@ function withSkillOptions(command: Command): Command {
     .option("--yes", "Accept detected defaults without prompting", false)
     .option("--prune", "Remove unmodified project-scope copies after a user-scope install")
     .option("--no-prune", "Keep project-scope copies");
+}
+
+function localCliPath(root: string): string {
+  return join(
+    root,
+    "node_modules",
+    "@wildorder",
+    "program-pipeline",
+    "dist",
+    "cli.js",
+  );
 }
 
 /**
@@ -266,6 +277,7 @@ withSkillOptions(
         }
       }
 
+      let addedDependency = false;
       if (existsSync(join(root, "package.json"))) {
         const manager =
           options.pm === undefined
@@ -293,10 +305,46 @@ withSkillOptions(
           process.exitCode = 1;
           return;
         }
+        addedDependency = true;
       } else {
         console.warn(
           "warning no package.json found; skipped adding the devDependency (run the CLI via npx @wildorder/program-pipeline)",
         );
+      }
+
+      // The dependency install just replaced this package's own files on
+      // disk, but this process is still running the code it loaded before
+      // that happened. Continuing in-process applies the *old* version's
+      // notion of which skills exist to the *new* version's files, which
+      // breaks outright the moment a release adds or retires one. Hand off to
+      // the CLI that was just installed.
+      const upgraded = localCliPath(root);
+      if (addedDependency && existsSync(upgraded)) {
+        const exitCode = await new Promise<number>(
+          (resolvePromise, rejectPromise) => {
+            const child = spawn(
+              process.execPath,
+              [
+                upgraded,
+                ...installArgv(
+                  { ...options, cwd: root },
+                  command.getOptionValueSource("prune") === "cli",
+                ),
+              ],
+              { cwd: root, stdio: "inherit", windowsHide: true },
+            );
+            child.on("error", rejectPromise);
+            child.on("close", (code) => resolvePromise(code ?? 1));
+          },
+        );
+        if (exitCode !== 0) {
+          process.exitCode = exitCode;
+          return;
+        }
+        console.log(
+          "setup complete; run /init-project from your agent to continue",
+        );
+        return;
       }
 
       const result = await runSkillInstall({ ...options, cwd: root }, command);

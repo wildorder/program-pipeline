@@ -148,8 +148,10 @@ export {
   type PreferredScope,
 } from "./install-prefs.js";
 export {
+  installArgv,
   planSkillInstall,
   scopesFor,
+  type InstallArgvOptions,
   type SkillPlan,
   type SkillPlanOptions,
 } from "./install-wizard.js";

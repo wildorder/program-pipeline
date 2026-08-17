@@ -8,7 +8,11 @@ import {
   saveInstallPrefs,
 } from "../src/install-prefs.js";
 import { installSkills } from "../src/install-skills.js";
-import { planSkillInstall, scopesFor } from "../src/install-wizard.js";
+import {
+  installArgv,
+  planSkillInstall,
+  scopesFor,
+} from "../src/install-wizard.js";
 import type { PromptStreams } from "../src/prompt.js";
 
 const ENTER = "\r";
@@ -457,6 +461,59 @@ describe("install preferences", () => {
     );
 
     await expect(loadInstallPrefs(home)).resolves.toBeUndefined();
+  });
+});
+
+describe("installArgv", () => {
+  const base = {
+    cwd: "/project",
+    root: [] as string[],
+    force: false,
+    yes: false,
+  };
+
+  it("always names the resolved working directory", () => {
+    expect(installArgv(base, false)).toEqual(["install", "--cwd", "/project"]);
+  });
+
+  it("carries every option through the handoff", () => {
+    // A dropped option here would silently install somewhere the user did not
+    // ask for, which is the failure this handoff exists to prevent.
+    expect(
+      installArgv(
+        {
+          cwd: "/project",
+          targets: "claude,cursor",
+          scope: "user",
+          root: ["claude=/custom", "cursor=/other"],
+          force: true,
+          yes: true,
+        },
+        false,
+      ),
+    ).toEqual([
+      "install",
+      "--cwd",
+      "/project",
+      "--targets",
+      "claude,cursor",
+      "--scope",
+      "user",
+      "--root",
+      "claude=/custom",
+      "--root",
+      "cursor=/other",
+      "--force",
+      "--yes",
+    ]);
+  });
+
+  it("forwards prune only when the user actually typed it", () => {
+    // Commander gives --prune a value either way; forwarding the default
+    // would turn an unset flag into an explicit one.
+    expect(installArgv({ ...base, prune: true }, false)).not.toContain("--prune");
+    expect(installArgv({ ...base, prune: true }, true)).toContain("--prune");
+    expect(installArgv({ ...base, prune: false }, true)).toContain("--no-prune");
   });
 });
 

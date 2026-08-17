@@ -49,6 +49,41 @@ export interface SkillPlan {
   detected: DetectedTarget[];
 }
 
+/** The option surface `install` and `setup` share, as plain values. */
+export interface InstallArgvOptions {
+  cwd: string;
+  targets?: string;
+  scope?: string;
+  root: string[];
+  force: boolean;
+  yes: boolean;
+  prune?: boolean;
+}
+
+/**
+ * Rebuild a run's skill options as an `install` argv, so `setup` can hand off
+ * to the CLI it just installed rather than continuing in its own process —
+ * where the code in memory predates the files on disk.
+ *
+ * Every option must survive the round trip. Dropping `--scope` here would
+ * silently install to a different root than the user asked for, which is the
+ * exact class of failure this handoff exists to prevent.
+ */
+export function installArgv(
+  options: InstallArgvOptions,
+  pruneCameFromCli: boolean,
+): string[] {
+  const argv = ["install", "--cwd", options.cwd];
+  if (options.targets !== undefined) argv.push("--targets", options.targets);
+  if (options.scope !== undefined) argv.push("--scope", options.scope);
+  for (const override of options.root) argv.push("--root", override);
+  if (options.force) argv.push("--force");
+  if (options.yes) argv.push("--yes");
+  // Commander gives --prune a value either way, so only forward a real one.
+  if (pruneCameFromCli) argv.push(options.prune ? "--prune" : "--no-prune");
+  return argv;
+}
+
 export function scopesFor(scope: PreferredScope): InstallScope[] {
   if (scope === "both") return ["user", "project"];
   return [scope];

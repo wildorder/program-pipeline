@@ -276,17 +276,25 @@ async function pruneProjectCopies(
 }
 
 /**
- * Remove retired skills from every scope this run touched. Called only after
- * a successful install, for the same reason pruning is: a run that aborted on
- * a conflict must not have deleted anything.
+ * Remove retired skills from **both** scopes, whatever scope this run is
+ * installing into.
+ *
+ * Scoping this to the install's own scopes was wrong: a stale skill almost
+ * always sits in the scope you *stopped* using. A project installed before
+ * the move to user-scope defaults keeps its project copies, and a later
+ * user-scope install would never look at them — leaving the retired skills
+ * exactly where the agent still reads them.
+ *
+ * Called only after a successful install, for the same reason pruning is: a
+ * run that aborted on a conflict must not have deleted anything.
  */
 async function retireWorkflows(
   projectRoot: string,
   detected: DetectedTarget[],
   targets: SkillTarget[],
-  scopes: InstallScope[],
   result: InstallSkillsResult,
 ): Promise<void> {
+  const scopes: InstallScope[] = ["user", "project"];
   const seen = new Set<string>();
   for (const entry of detected) {
     if (!targets.includes(entry.target)) continue;
@@ -418,10 +426,10 @@ export async function installSkills(
     }
   }
 
-  // Retired skills go from every scope this run touched, not just the pruned
-  // one: a stale copy anywhere keeps telling an agent to do work that is now
-  // a command.
-  await retireWorkflows(root, detected, input.targets, scopes, result);
+  // Retired skills go from both scopes regardless of where this run installs:
+  // a stale copy anywhere keeps telling an agent to do work that is now a
+  // command.
+  await retireWorkflows(root, detected, input.targets, result);
 
   // Only after a clean user-scope install: pruning first would delete the
   // developer's working skills if the install then aborted.

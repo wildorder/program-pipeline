@@ -522,6 +522,49 @@ describe("retired workflows", () => {
     expect(await exists(planted)).toBe(false);
   });
 
+  it("removes retired project-scope copies during a user-scope install", async () => {
+    const root = await temporaryRoot();
+    const home = join(root, "home");
+    // The shape a project left in by an install from before user scope became
+    // the default: project copies a user-scope run would never look at, in
+    // the scope the agent still reads.
+    const planted = await plantRetiredSkill(
+      join(root, ".claude", "skills"),
+      "author-workstreams",
+    );
+
+    const result = await installSkills({
+      cwd: root,
+      home,
+      targets: ["claude"],
+      scopes: ["user"],
+    });
+
+    expect(result.retired).toContain(
+      join(".claude", "skills", "author-workstreams", "SKILL.md"),
+    );
+    expect(await exists(planted)).toBe(false);
+  });
+
+  it("removes retired user-scope copies during a project-scope install", async () => {
+    const root = await temporaryRoot();
+    const home = join(root, "home");
+    const planted = await plantRetiredSkill(
+      join(home, ".claude", "skills"),
+      "review-program",
+    );
+
+    const result = await installSkills({
+      cwd: root,
+      home,
+      targets: ["claude"],
+      scopes: ["project"],
+    });
+
+    expect(result.retired).toContain(planted);
+    expect(await exists(planted)).toBe(false);
+  });
+
   it("reports nothing when no retired skill is installed", async () => {
     const root = await temporaryRoot();
     const result = await installSkills({

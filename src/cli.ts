@@ -10,6 +10,12 @@ import { buildProgram } from "./build-program.js";
 import { reviewCriteria } from "./criteria.js";
 import { reviewProgram } from "./review-program.js";
 import {
+  parseStage,
+  runProgram,
+  RUN_STAGES,
+  type RunStage,
+} from "./run-program.js";
+import {
   addDevDependencyCommand,
   detectPackageManager,
   isPnpmWorkspaceRoot,
@@ -392,6 +398,64 @@ program
     for (const problem of problems) console.error(problem);
     process.exitCode = 1;
   });
+
+program
+  .command("run")
+  .description(
+    "Run the whole pipeline: author, validate, converge, criteria, build, snapshot",
+  )
+  .argument("<program-id>", "Program ID")
+  .option("--cwd <path>", "Project directory", process.cwd())
+  .option(
+    "--from <stage>",
+    `Start at this stage: ${RUN_STAGES.join(", ")}`,
+    parseStage,
+  )
+  .option("--to <stage>", "Stop after this stage", parseStage)
+  .option("--review", "Include the advisory architecture review", false)
+  .option("--no-commit", "Do not commit between stages")
+  .option("--json", "Print a machine-readable report", false)
+  .action(
+    async (
+      programId: string,
+      options: {
+        cwd: string;
+        from?: RunStage;
+        to?: RunStage;
+        review: boolean;
+        commit: boolean;
+        json: boolean;
+      },
+    ) => {
+      const result = await runProgram({
+        cwd: options.cwd,
+        programId,
+        ...(options.from === undefined ? {} : { from: options.from }),
+        ...(options.to === undefined ? {} : { to: options.to }),
+        review: options.review,
+        // Commander defaults --no-commit's value to true, so only an explicit
+        // false is an override.
+        ...(options.commit === false ? { commit: false } : {}),
+        onProgress: (line) => {
+          if (!options.json) console.log(line);
+        },
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log("");
+        for (const stage of result.stages) {
+          const commit = stage.commit ? ` (commit ${stage.commit})` : "";
+          console.log(`${stage.stage}: ${stage.result}${commit}`);
+        }
+        console.log(`${result.result}: ${result.programId}`);
+        if (result.reason) console.log(result.reason);
+      }
+      if (result.result === "FAILED") process.exitCode = 1;
+      else if (result.result === "STOPPED") process.exitCode = 2;
+    },
+  );
 
 program
   .command("author")

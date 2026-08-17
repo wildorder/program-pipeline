@@ -1,0 +1,442 @@
+import { resolve } from "node:path";
+import { runProcess, type AgentRunner, type VerifyRunner } from "./agent-runner.js";
+import { updateAsBuilt } from "./as-built.js";
+import { authorWorkstreams } from "./author-workstreams.js";
+import { buildProgram } from "./build-program.js";
+import { reviewCriteria } from "./criteria.js";
+import { loadPipelineConfig, type PipelineConfig } from "./pipeline-config.js";
+import { reviewProgram } from "./review-program.js";
+import { validateLoop } from "./validate-loop.js";
+import { validateWorkstreams } from "./validate.js";
+
+/**
+ * Run the whole pipeline: one command from a planned program to a built one.
+ *
+ * The individual commands exist because each stage needed its own brief, its
+ * own agent, and its own failure semantics. But composing them by hand meant
+ * eight invocations with manual commits in between, which is more babysitting
+ * than the workflow it replaced — the seams were the point, the command count
+ * was not supposed to be the price.
+ *
+ * So this sequences them, commits between stages itself, and stops for a
+ * human in exactly one place: the acceptance-criteria gate, and only when
+ * that gate is switched on. Everything else either continues or fails loudly.
+ *
+ * It is also what makes the CI move possible. A workflow file wants one
+ * command, not eight with `git commit` between them.
+ */
+
+export const RUN_STAGES = [
+  "author",
+  "validate",
+  "converge",
+  "review",
+  "criteria",
+  "build",
+  "as-built",
+] as const;
+
+export type RunStage = (typeof RUN_STAGES)[number];
+
+/** Stages the default run performs, in order. */
+const DEFAULT_STAGES: readonly RunStage[] = [
+  "author",
+  "validate",
+  "converge",
+  "criteria",
+  "build",
+  "as-built",
+];
+
+export interface RunStageResult {
+  stage: RunStage;
+  /** The stage command's own outcome string. */
+  result: string;
+  reason?: string;
+  /** Short SHA when this stage's output was committed. */
+  commit?: string;
+}
+
+export type RunOutcome = "COMPLETE" | "STOPPED" | "FAILED";
+
+export interface RunProgramResult {
+  programId: string;
+  result: RunOutcome;
+  reason?: string;
+  stages: RunStageResult[];
+}
+
+export interface RunProgramOptions {
+  cwd: string;
+  programId: string;
+  /** Start here instead of at the beginning; use to resume after a stop. */
+  from?: RunStage;
+  /** Stop after this stage. */
+  to?: RunStage;
+  /** Include the advisory architecture review, which is otherwise skipped. */
+  review?: boolean;
+  /** Do not commit between stages, and pass --no-commit down to the build. */
+  commit?: boolean;
+  agentRunner?: AgentRunner;
+  verifyRunner?: VerifyRunner;
+  now?: () => Date;
+  onProgress?: (line: string) => void;
+}
+
+export function parseStage(value: string): RunStage {
+  const stage = value.trim().toLowerCase();
+  if (!(RUN_STAGES as readonly string[]).includes(stage)) {
+    throw new Error(
+      `Unknown stage "${value}". Expected: ${RUN_STAGES.join(", ")}.`,
+    );
+  }
+  return stage as RunStage;
+}
+
+/**
+ * The stages this run will perform: the default sequence, narrowed by
+ * `--from` / `--to`, with `review` included only when asked for.
+ */
+export function stagesFor(options: {
+  from?: RunStage;
+  to?: RunStage;
+  review?: boolean;
+}): RunStage[] {
+  const ordered = options.review
+    ? RUN_STAGES.filter((stage) => DEFAULT_STAGES.includes(stage) || stage === "review")
+    : [...DEFAULT_STAGES];
+  const start = options.from ? ordered.indexOf(options.from) : 0;
+  const end = options.to ? ordered.indexOf(options.to) : ordered.length - 1;
+  if (start < 0 || end < 0 || end < start) return [];
+  return ordered.slice(start, end + 1);
+}
+
+async function git(
+  root: string,
+  args: string[],
+): Promise<{ exitCode: number; output: string }> {
+  return runProcess("git", args, { cwd: root, shell: false });
+}
+
+async function isGitRepository(root: string): Promise<boolean> {
+  const result = await git(root, ["rev-parse", "--is-inside-work-tree"]);
+  return result.exitCode === 0;
+}
+
+/**
+ * Uncommitted paths that would be swept into a stage's commit.
+ *
+ * The runner's own artifacts are exempt, not out of convenience but because
+ * they are not user work in progress: the manifest carries workstream
+ * statuses and the criteria approval, both written by these commands, and the
+ * criteria document is regenerated on every run. Without this, the documented
+ * resume path would dead-end — `criteria --approve` edits the manifest, so
+ * the very next `run` would refuse to start on the change it just asked for.
+ */
+async function workingTreeDirty(
+  root: string,
+  logDir: string,
+  programId: string,
+): Promise<string[]> {
+  const status = await git(root, [
+    "status",
+    "--porcelain",
+    "-uall",
+    "--",
+    ".",
+    `:(exclude)${logDir}`,
+    `:(exclude)docs/programs/${programId}-manifest.json`,
+    `:(exclude)docs/programs/${programId}-criteria.md`,
+  ]);
+  if (status.exitCode !== 0) return [];
+  return status.output
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+/**
+ * Commit whatever a stage produced. Staging excludes the runner's log
+ * directory the same way the build runner does: logs are runner output, not
+ * work. A git-side refusal is reported, never fatal.
+ */
+async function commitStage(
+  root: string,
+  logDir: string,
+  message: string,
+): Promise<{ sha?: string; empty?: boolean; error?: string }> {
+  const staged = await git(root, ["add", "-A", "--", "."]);
+  if (staged.exitCode !== 0) return { error: "git add failed" };
+  const held = await git(root, ["reset", "--quiet", "--", logDir]);
+  if (held.exitCode !== 0) return { error: "git reset failed" };
+  const pending = await git(root, ["diff", "--cached", "--quiet"]);
+  if (pending.exitCode === 0) return { empty: true };
+  const committed = await git(root, ["commit", "-m", message]);
+  if (committed.exitCode !== 0) return { error: "git commit refused" };
+  const head = await git(root, ["rev-parse", "--short", "HEAD"]);
+  return head.exitCode === 0 ? { sha: head.output.trim() } : {};
+}
+
+export async function runProgram(
+  options: RunProgramOptions,
+): Promise<RunProgramResult> {
+  const root = resolve(options.cwd);
+  const progress = options.onProgress ?? ((): void => {});
+  const stages: RunStageResult[] = [];
+
+  const finish = (
+    result: RunOutcome,
+    reason?: string,
+  ): RunProgramResult => ({
+    programId: options.programId,
+    result,
+    ...(reason === undefined ? {} : { reason }),
+    stages,
+  });
+
+  let config: PipelineConfig;
+  try {
+    config = await loadPipelineConfig(root);
+  } catch (error) {
+    return finish("FAILED", error instanceof Error ? error.message : String(error));
+  }
+
+  const planned = stagesFor({
+    ...(options.from === undefined ? {} : { from: options.from }),
+    ...(options.to === undefined ? {} : { to: options.to }),
+    review: options.review ?? false,
+  });
+  if (planned.length === 0) {
+    return finish(
+      "FAILED",
+      `No stages to run: --from ${options.from ?? "(start)"} comes after --to ${options.to ?? "(end)"}.`,
+    );
+  }
+
+  const logDir = config.build.logDir;
+  const wantCommits = options.commit ?? true;
+  const inRepository = await isGitRepository(root);
+  const commitsEnabled = wantCommits && inRepository;
+  if (wantCommits && !inRepository) {
+    progress("commits disabled: not a git repository");
+  }
+
+  // Same guard the build runner applies, hoisted to the front of the run: the
+  // stages commit their own output, and sweeping unrelated work into a
+  // machine-authored commit is not something to discover at stage five.
+  if (commitsEnabled) {
+    const dirty = await workingTreeDirty(root, logDir, options.programId);
+    if (dirty.length > 0) {
+      return finish(
+        "FAILED",
+        `The working tree has ${dirty.length} uncommitted change(s), and each stage commits what it produces. Commit or stash them, or re-run with --no-commit. Changes: ${dirty
+          .slice(0, 10)
+          .join("; ")}${dirty.length > 10 ? "; …" : ""}`,
+      );
+    }
+  }
+
+  progress(`run ${options.programId}: ${planned.join(" -> ")}`);
+
+  const record = async (
+    stage: RunStage,
+    result: string,
+    reason: string | undefined,
+    commitMessage?: string,
+  ): Promise<void> => {
+    const entry: RunStageResult = {
+      stage,
+      result,
+      ...(reason === undefined ? {} : { reason }),
+    };
+    if (commitsEnabled && commitMessage !== undefined) {
+      const committed = await commitStage(root, logDir, commitMessage);
+      if (committed.sha) {
+        entry.commit = committed.sha;
+        progress(`${stage}: committed ${committed.sha}`);
+      } else if (committed.error) {
+        progress(`${stage}: ${committed.error}; changes left in the tree`);
+      }
+    }
+    stages.push(entry);
+  };
+
+  for (const stage of planned) {
+    progress(`\n=== ${stage} ===`);
+
+    if (stage === "author") {
+      const result = await authorWorkstreams({
+        cwd: root,
+        programId: options.programId,
+        ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
+        ...(options.now ? { now: options.now } : {}),
+        onProgress: progress,
+      });
+      await record(
+        stage,
+        result.result,
+        result.reason,
+        `specs(${options.programId}): author workstreams`,
+      );
+      if (result.result === "REQUIRES_REPLAN") {
+        return finish(
+          "FAILED",
+          `Authoring needs the program replanned before it can continue. ${result.reason ?? ""} Re-plan with /plan-program, then run again.`.trim(),
+        );
+      }
+      if (result.result !== "COMPLETE") {
+        return finish("FAILED", `Authoring ${result.result}. ${result.reason ?? ""}`.trim());
+      }
+      continue;
+    }
+
+    if (stage === "validate") {
+      // Free and instant, and it runs before the expensive stages on purpose:
+      // a mechanical defect found here costs seconds, and the same defect
+      // found by the convergence loop costs two agent invocations.
+      const report = await validateWorkstreams(root, options.programId);
+      const blockers = report.findings.filter(
+        ({ severity }) => severity === "blocker",
+      );
+      await record(stage, report.result, undefined);
+      progress(
+        `validate: ${report.result} (${blockers.length} blocker(s), ${report.findings.length} finding(s))`,
+      );
+      if (report.result === "FAILED") {
+        return finish(
+          "FAILED",
+          `Deterministic validation failed with ${blockers.length} blocker(s): ${blockers
+            .map(({ code, message }) => `${code}: ${message}`)
+            .join(" | ")}`,
+        );
+      }
+      continue;
+    }
+
+    if (stage === "converge") {
+      const result = await validateLoop({
+        cwd: root,
+        programId: options.programId,
+        ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
+        onProgress: progress,
+      });
+      await record(
+        stage,
+        result.result,
+        result.reason,
+        `specs(${options.programId}): convergence`,
+      );
+      if (result.outcome === "requires-replan") {
+        return finish(
+          "FAILED",
+          `The convergence loop found a defect no spec edit can fix. ${result.reason ?? ""} Re-plan with /plan-program, then run again.`.trim(),
+        );
+      }
+      if (result.outcome === "aborted") {
+        return finish("FAILED", `Convergence aborted. ${result.reason ?? ""}`.trim());
+      }
+      if (result.result === "FAILED") {
+        return finish(
+          "FAILED",
+          `The validation gate failed after convergence. ${result.reason ?? ""}`.trim(),
+        );
+      }
+      continue;
+    }
+
+    if (stage === "review") {
+      const result = await reviewProgram({
+        cwd: root,
+        programId: options.programId,
+        ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
+        ...(options.now ? { now: options.now } : {}),
+        onProgress: progress,
+      });
+      await record(
+        stage,
+        result.result,
+        result.reason,
+        `docs(${options.programId}): program review`,
+      );
+      // A review reports; it never blocks. Only an unusable one stops the run.
+      if (result.result === "ABORTED") {
+        return finish("FAILED", `Review aborted. ${result.reason ?? ""}`.trim());
+      }
+      continue;
+    }
+
+    if (stage === "criteria") {
+      const result = await reviewCriteria({
+        cwd: root,
+        programId: options.programId,
+        ...(options.now ? { now: options.now } : {}),
+        onProgress: progress,
+      });
+      await record(
+        stage,
+        result.result,
+        result.reason,
+        `docs(${options.programId}): acceptance criteria`,
+      );
+      if (result.result === "ABORTED") {
+        return finish("FAILED", `Criteria collection failed. ${result.reason ?? ""}`.trim());
+      }
+      // The one intentional stop, and only when the gate is switched on.
+      // Without it the document is produced and the run carries on.
+      if (
+        config.build.requireCriteriaApproval &&
+        result.result === "REVIEW_REQUIRED"
+      ) {
+        return finish(
+          "STOPPED",
+          // Resume from criteria, not from build: re-running this stage is
+          // free, confirms the approval still matches, and commits it.
+          `Review the acceptance criteria in ${result.documentPath}, then approve and resume:\n  program-pipeline criteria ${options.programId} --approve\n  program-pipeline run ${options.programId} --from criteria`,
+        );
+      }
+      continue;
+    }
+
+    if (stage === "build") {
+      const result = await buildProgram({
+        cwd: root,
+        programId: options.programId,
+        approve: true,
+        // The build runner owns its own per-workstream commits.
+        ...(commitsEnabled ? {} : { commit: false }),
+        ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
+        ...(options.verifyRunner ? { verifyRunner: options.verifyRunner } : {}),
+        ...(options.now ? { now: options.now } : {}),
+        onProgress: progress,
+      });
+      await record(stage, result.result, result.reason);
+      if (result.result !== "COMPLETE") {
+        return finish(
+          "FAILED",
+          `Build ${result.result}. ${result.reason ?? ""} Fix the cause and resume with: program-pipeline run ${options.programId} --from build`.trim(),
+        );
+      }
+      continue;
+    }
+
+    // as-built
+    const result = await updateAsBuilt({
+      cwd: root,
+      programId: options.programId,
+      ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
+      onProgress: progress,
+    });
+    await record(
+      stage,
+      result.result,
+      result.reason,
+      `docs(${options.programId}): as-built snapshot`,
+    );
+    if (result.result === "ABORTED") {
+      return finish("FAILED", `Snapshot aborted. ${result.reason ?? ""}`.trim());
+    }
+  }
+
+  progress(`\nrun ${options.programId} complete`);
+  return finish("COMPLETE");
+}

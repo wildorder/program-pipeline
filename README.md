@@ -25,17 +25,16 @@ pinned as a devDependency.
 
 `/init-project` interviews you for the project details, runs the deterministic
 `init` scaffolding under the hood, and finishes by pointing you at
-`/plan-program` to plan your first program. From there everything is a CLI
-command you run from a terminal or CI, not from inside a chat session:
+`/plan-program` to plan your first program. From there it is one command,
+run from a terminal or CI rather than from inside a chat session:
 
 ```sh
-npx --yes @wildorder/program-pipeline author phase-1
-npx --yes @wildorder/program-pipeline converge phase-1
-npx --yes @wildorder/program-pipeline review phase-1
-npx --yes @wildorder/program-pipeline criteria phase-1 --approve
-npx --yes @wildorder/program-pipeline build phase-1
-npx --yes @wildorder/program-pipeline as-built phase-1
+npx --yes @wildorder/program-pipeline run phase-1
 ```
+
+That authors the specs, validates them, converges them, collects the
+acceptance criteria, builds, and snapshots — committing between stages and
+stopping only on a real failure or at the criteria gate.
 
 ## Install
 
@@ -221,6 +220,59 @@ installation destination is a blocking conflict: the entire installation aborts
 before writing anything, and nothing is pruned. Identical skills are skipped and
 unmodified package-generated skills update safely. Use `--force` only when you
 explicitly want packaged content to replace destination conflicts.
+
+### `run`
+
+The whole pipeline, one command.
+
+```sh
+npx --yes @wildorder/program-pipeline run phase-1 --cwd .
+npx --yes @wildorder/program-pipeline run phase-1 --from build
+npx --yes @wildorder/program-pipeline run phase-1 --review
+```
+
+Stages, in order: **author → validate → converge → criteria → build →
+as-built**. Each one commits what it produced, so a completed run leaves a
+readable history rather than a pile of uncommitted work, and the next stage
+never trips over the previous one's output.
+
+The individual commands still exist and are what this calls — reach for them
+when something goes wrong and you want to re-run one piece. The point of
+`run` is that you shouldn't have to know they exist.
+
+**It stops for a human in exactly one place**, and only when you have
+switched that gate on:
+
+```text
+run phase-1                                    # walk away
+  → STOPPED: review the acceptance criteria
+criteria phase-1 --approve
+run phase-1 --from criteria                    # walk away again
+```
+
+Resume from `criteria` rather than `build`: re-running that stage is free,
+confirms the approval still matches the criteria, and commits it.
+
+Everything else either continues or fails loudly. `validate` runs before the
+expensive stages deliberately — a mechanical defect caught there costs
+seconds, and the same defect found by the convergence loop costs two agent
+invocations.
+
+`review` is **not** in the default sequence. It never blocks and it costs an
+agent, so the default path to a built program does not pay for it; add
+`--review` when you want the report.
+
+Flags: `--from <stage>` and `--to <stage>` narrow the range, `--no-commit`
+skips the commits, `--json` prints a machine-readable report.
+
+Exit codes: `0` complete, `1` failed, `2` stopped at the criteria gate.
+
+Like `build`, it refuses to start on a dirty working tree, since each stage
+commits what it produced and will not sweep unrelated work into a
+machine-authored commit. The runner's own artifacts — this program's manifest
+and criteria document — are exempt, because they are not work in progress:
+without that, `criteria --approve` would edit the manifest and the very next
+`run` would refuse to start on the change it had just asked for.
 
 ### `author`
 
@@ -682,16 +734,18 @@ something:
 2. `/plan-program` — turn the vision and current as-built state into a
    program plan, a manifest, and a scope for every workstream.
 
-Everything after planning is a CLI command:
+Everything after planning is `program-pipeline run`, which sequences the
+stages below and commits between them:
 
 ```text
 /plan-program        HUMAN   design, scope, decompose
-author               machine one clean agent per workstream, per level
-converge             machine critic/writer spec convergence
-review               machine read-only architecture review
-criteria --approve   HUMAN   the definition of done
-build                machine implement, verify, commit
-as-built             machine snapshot what was actually built
+  run ┬ author               one clean agent per workstream, per level
+      ├ validate             deterministic, free, before anything expensive
+      ├ converge             critic/writer spec convergence
+      ├ review               read-only architecture review (--review)
+      ├ criteria    HUMAN    the definition of done — the one stop
+      ├ build                implement, verify, commit
+      └ as-built             snapshot what was actually built
 ```
 
 Those steps used to be skills too, and the move out of the agent session is

@@ -78,6 +78,12 @@ headless command that spawns its own agents.
   `init-project` and `plan-program`.
 - Every spawned agent ends its reply with a fenced `summary` block, and the
   runner records that text verbatim. See `src/agent-summary.ts`.
+- Parsing a model reply means stating the shape you expect. `extractJson`
+  takes a predicate; never take "the last JSON block" and hope. A reply that
+  never produces the contract is a protocol failure, not an empty result —
+  a gate that cannot read its critic must not pass.
+- Each stage is usable alone and composed by `program-pipeline run`. Adding a
+  stage means adding it to `RUN_STAGES` too, or it is unreachable in practice.
 - Never overwrite user-authored files without explicit `--force`.
 - Keep all workflows provider-neutral and free of product-specific context.
 - Use dependency injection for filesystem boundaries that require unit tests.

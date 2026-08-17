@@ -30,6 +30,17 @@ export {
   type AsBuiltResult,
 } from "./as-built.js";
 export {
+  parseStage,
+  runProgram,
+  RUN_STAGES,
+  stagesFor,
+  type RunOutcome,
+  type RunProgramOptions,
+  type RunProgramResult,
+  type RunStage,
+  type RunStageResult,
+} from "./run-program.js";
+export {
   renderReviewReport,
   reportPathFor,
   reviewProgram,

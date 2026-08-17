@@ -117,6 +117,10 @@ so explicitly in the report: `program-pipeline build` aborts without an
 `agent` block, so an unset builder is a deferred decision, not a default.
 
 Ask the Step 2 and Step 3 questions together in one message when possible.
+Include one optional execution question in that same message: "Install a
+manual GitHub Actions workflow for program runs?" Record the answer and apply
+it only after the agent blocks have been written. Declining is the default and
+does not affect local execution; the user can add it later with `ci init`.
 
 ## Step 4 — Run the deterministic initializer
 
@@ -213,7 +217,25 @@ Skip this step for greenfield projects.
    delete it. Treat any other stray pipeline scripts from older versions the
    same way — never adopt them into the new workflow.
 
-## Step 7 — Apply the version-control decisions
+## Step 7 — Optionally install GitHub execution
+
+If the user opted in during Step 3, run this only after re-reading and
+confirming the configured agent blocks:
+
+```sh
+npx --yes @wildorder/program-pipeline ci init github --cwd "{project-root}"
+```
+
+Do not hand-author the workflow and do not use `--force` unless the user
+explicitly approves replacing the existing file reported by the command.
+Explain that this installs a repository workflow, not a GitHub App. The
+ephemeral GitHub runner installs the known configured CLIs itself and needs
+its own Actions credentials; it does not inherit authentication from this
+machine. Report the secrets and variables named by the command, but tell the
+user to configure only those used by their selected providers. AWS access
+should use the generated OIDC role path rather than long-lived access keys.
+
+## Step 8 — Apply the version-control decisions
 
 Execute what the user approved in Step 2:
 
@@ -222,7 +244,7 @@ Execute what the user approved in Step 2:
   Do not stage unrelated in-progress changes.
 - If the user declined, leave the working tree as is.
 
-## Step 8 — Report
+## Step 9 — Report
 
 Report:
 
@@ -230,5 +252,7 @@ Report:
 2. Skill conflicts, if any.
 3. Warnings from the initializer.
 4. Brownfield: the as-built and vision drafts produced and any assumptions.
-5. Git actions taken (repository initialized, setup committed) or declined.
-6. Next step: invoke `/plan-program` for the first program.
+5. GitHub Actions workflow installed or declined, plus any remaining
+   credential configuration.
+6. Git actions taken (repository initialized, setup committed) or declined.
+7. Next step: invoke `/plan-program` for the first program.

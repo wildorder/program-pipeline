@@ -23,6 +23,7 @@ import {
   parsePackageManager,
 } from "./detect-package-manager.js";
 import { initProject } from "./init-project.js";
+import { initGitHubCi } from "./init-ci.js";
 import {
   ALL_TARGETS,
   DEFAULT_TARGETS,
@@ -359,6 +360,54 @@ withSkillOptions(
           "setup complete; run /init-project from your agent to continue",
         );
       }
+    },
+  );
+
+const ci = program
+  .command("ci")
+  .description("Configure optional cloud execution for program runs");
+
+ci.command("init")
+  .description("Install a CI workflow without overwriting an existing one")
+  .argument("[provider]", "CI provider", "github")
+  .option("--cwd <path>", "Project directory", process.cwd())
+  .option(
+    "--setup-command <command>",
+    "Project dependency setup command (default: detected from lockfiles)",
+  )
+  .option("--force", "Replace the existing generated workflow", false)
+  .action(
+    async (
+      provider: string,
+      options: { cwd: string; setupCommand?: string; force: boolean },
+    ) => {
+      if (provider.trim().toLowerCase() !== "github") {
+        throw new Error(
+          `Unknown CI provider "${provider}". Expected: github.`,
+        );
+      }
+      const result = await initGitHubCi({
+        cwd: options.cwd,
+        force: options.force,
+        ...(options.setupCommand === undefined
+          ? {}
+          : { setupCommand: options.setupCommand }),
+      });
+      console.log(`${result.result} ${result.path}`);
+      if (result.agents.length > 0) {
+        console.log(`agent commands: ${result.agents.join(", ")}`);
+      }
+      for (const warning of result.warnings) {
+        console.warn(`warning ${warning}`);
+      }
+      console.log(
+        "configure only the credentials used by this project in GitHub Actions settings:",
+      );
+      console.log(`  secrets: ${result.requiredSecrets.join(", ")}`);
+      console.log(`  variables: ${result.requiredVariables.join(", ")}`);
+      console.log(
+        "commit the workflow, then run it from Actions > Program Pipeline",
+      );
     },
   );
 

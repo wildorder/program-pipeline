@@ -124,6 +124,21 @@ describe("packaged CLI end to end", () => {
         readFile(join(project, "AGENTS.md"), "utf8"),
       ).resolves.toContain("VERIFY BEFORE CLAIMING COMPLETION");
 
+      const ci = await runCli(
+        [cli, "ci", "init", "github", "--cwd", project],
+        project,
+      );
+      expect(ci.code, ci.output).toBe(0);
+      expect(ci.output).toContain(
+        "created .github/workflows/program-pipeline.yml",
+      );
+      await expect(
+        readFile(
+          join(project, ".github", "workflows", "program-pipeline.yml"),
+          "utf8",
+        ),
+      ).resolves.toContain("workflow_dispatch:");
+
       const doctor = await runCli([cli, "doctor"], project);
       expect(doctor.code, doctor.output).toBe(0);
       expect(doctor.output).toContain("healthy");

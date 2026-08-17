@@ -131,6 +131,52 @@ The universal directives block is resolved in this order: an explicit
 `~/.program-pipeline/universal-directives.md`, then the directives template
 packaged with this package.
 
+### `ci init github`
+
+Optionally install a manually dispatched GitHub Actions workflow after
+`pipeline.config.json` has all three agent roles configured:
+
+```sh
+npx --yes @wildorder/program-pipeline ci init github --cwd .
+```
+
+This writes `.github/workflows/program-pipeline.yml`. It is a file in the
+repository, not a GitHub App: on each run GitHub checks out the repository,
+installs the agent CLIs named by `agent`, `authorAgent`, and `validatorAgent`,
+and installs the exact Program Pipeline version recorded in
+`pipeline.config.json`. Existing workflows are preserved; inspect the
+generated file and use `--force` only when you intend to replace it. Use
+`--setup-command "..."` when lockfile-based project dependency detection is
+not sufficient.
+
+Commit the workflow, open **Actions → Program Pipeline → Run workflow**, and
+enter a program ID. Runs for different program IDs can execute concurrently;
+runs for the same ID queue behind one another. Each program uses its own
+`program/{program-id}` branch and the workflow opens or updates a draft pull
+request against the default branch. Exit code `2` is treated as the expected
+acceptance-criteria stop; review the committed criteria, then dispatch again
+with **approve_criteria** selected.
+
+The runner is ephemeral and does not inherit logins from a developer machine.
+Configure only what the selected agents use under the repository or
+organization's **Settings → Secrets and variables → Actions**:
+
+- Secrets: `OPENAI_API_KEY` for Codex/OpenAI and/or `ANTHROPIC_API_KEY` for a
+  direct Anthropic invocation.
+- AWS: set `AWS_ROLE_TO_ASSUME` and optionally `AWS_REGION`; the workflow uses
+  GitHub OIDC to obtain temporary credentials. For Claude Code on Bedrock also
+  set `CLAUDE_CODE_USE_BEDROCK=true`. Cline's Bedrock provider/model stay in
+  its agent args in `pipeline.config.json` and use the same temporary AWS
+  credential chain.
+- Optional version pins: `CODEX_VERSION`, `CLINE_VERSION`, and
+  `CLAUDE_CODE_VERSION`. Unset values install `latest`.
+
+Unknown agent commands are not guessed: the initializer warns and leaves an
+explicit installation step for you to add. Because agent CLIs can edit the
+checkout and run commands with the job's credentials, use this write-enabled
+workflow only in trusted repositories and review its permissions before
+committing it.
+
 ### `install`
 
 Install the packaged workflow skills for the agent tools you use.

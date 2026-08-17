@@ -128,6 +128,17 @@ export {
   type InitResult,
 } from "./init-project.js";
 export {
+  GITHUB_WORKFLOW_PATH,
+  initCiOptionsSchema,
+  initGitHubCi,
+  renderGitHubWorkflow,
+  type CiFileSystem,
+  type GitHubWorkflowOptions,
+  type InitCiOptions,
+  type InitCiResult,
+  type KnownAgentCli,
+} from "./init-ci.js";
+export {
   ALL_TARGETS,
   DEFAULT_TARGETS,
   detectTargets,

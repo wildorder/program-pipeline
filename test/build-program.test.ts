@@ -232,6 +232,12 @@ describe("buildProgram", () => {
     expect(agentPrompts[0]).toContain("WS-01");
     expect(agentPrompts[1]).toContain("WS-02");
     expect(agentPrompts[0]).toContain("npm test");
+    expect(agentPrompts[0]).toContain(
+      'tests, fixtures, imports, types, and lint rules',
+    );
+    expect(agentPrompts[0]).toContain(
+      "Do not report completion or submit while any command is failing",
+    );
     expect(verifyCalls).toEqual(["npm test", "npm test"]);
     await expect(manifestStatuses(root)).resolves.toEqual({
       "WS-01": "complete",
@@ -296,6 +302,48 @@ describe("buildProgram", () => {
     });
     expect(prompts[1]).toContain("failed independent verification");
     expect(prompts[1]).toContain("1 test failed");
+  });
+
+  it("reports every failing verification command to the recovery agent", async () => {
+    const root = await fixture({
+      maxRecoveryAttempts: 1,
+      verifyRetries: 0,
+      verify: {
+        build: "npm run build",
+        typecheck: "npm run typecheck",
+        test: "npm test",
+      },
+    });
+    const prompts: string[] = [];
+    let recovered = false;
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        prompts.push(invocation.prompt);
+        if (prompts.length === 2) recovered = true;
+        return pass();
+      },
+      verifyRunner: async (command) => {
+        if (recovered || command === "npm test") return pass();
+        return {
+          exitCode: 1,
+          output:
+            command === "npm run build" ? "build failed" : "typecheck failed",
+        };
+      },
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    expect(prompts[1]).toContain("npm run build");
+    expect(prompts[1]).toContain("build failed");
+    expect(prompts[1]).toContain("npm run typecheck");
+    expect(prompts[1]).toContain("typecheck failed");
+    expect(prompts[1]).toContain("npm test");
+    expect(prompts[1]).toContain(
+      "Do not report completion or submit while any verification command is failing",
+    );
   });
 
   it("fails an attempt when the agent changes nothing in a git repository", async () => {

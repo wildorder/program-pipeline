@@ -309,7 +309,13 @@ STEP 3 - VERIFY (mandatory):
 These exact commands are re-run independently after you finish; the workstream
 fails unless every one of them exits successfully:
 ${verification}
-- Fix all errors and repeat verification until every command exits successfully.
+- Run every command above against the final working tree. A successful build or
+  targeted test does not substitute for the complete command list.
+- Fix all failures caused by this workstream or by program changes it depends on,
+  including failures in tests, fixtures, imports, types, and lint rules. Those
+  failures are part of the implementation, not "out of scope."
+- If a command fails, continue working and repeat the complete verification list.
+  Do not report completion or submit while any command is failing.
 
 RULES:
 - Create files marked (NEW); edit existing files marked (MODIFY).
@@ -324,7 +330,11 @@ function recoveryPrompt(
   workstream: ManifestWorkstream,
   failureReason: string,
   failureOutput: string,
+  verifyCommands: Record<string, string>,
 ): string {
+  const verification = Object.entries(verifyCommands)
+    .map(([name, command]) => `- ${name}: \`${command}\``)
+    .join("\n");
   return `Workstream '${workstream.id}: ${workstream.name}' failed its previous build attempt.
 
 - Read the workstream spec: ${workstream.taskFile}
@@ -332,8 +342,14 @@ function recoveryPrompt(
 - Output tail:
 ${tail(failureOutput)}
 
-- Fix only the implementation and tests required by this workstream.
-- Ensure the project's verification commands exit successfully.
+- Fix the implementation and tests required by this workstream. Failures in
+  tests, fixtures, imports, types, and lint rules caused by this workstream or
+  prior program changes it depends on are in scope and must not be dismissed.
+- Run every command below against the final working tree:
+${verification}
+- A successful build or targeted test does not substitute for this complete
+  list. If any command fails, continue fixing and rerun the complete list.
+- Do not report completion or submit while any verification command is failing.
 - Do not commit changes, bypass hooks, or weaken verification. The build runner
   commits your work itself once it passes independent verification; leave the
   changes in the working tree.
@@ -738,7 +754,12 @@ export async function buildProgram(
         const prompt =
           attempts === 1
             ? workstreamPrompt(workstream, verifyCommands)
-            : recoveryPrompt(workstream, failureReason, failureOutput);
+            : recoveryPrompt(
+                workstream,
+                failureReason,
+                failureOutput,
+                verifyCommands,
+              );
         const baseline = treeGuardAvailable ? await signTree() : undefined;
 
         logStream.write(
@@ -944,6 +965,10 @@ export async function buildProgram(
         failedCommand = undefined;
         failureOutput = "";
         verified = true;
+        const verificationFailures: Array<{
+          command: string;
+          output: string;
+        }> = [];
         for (const [name, command] of Object.entries(verifyCommands)) {
           // A failure that vanishes on an immediate re-run is a flaky verify
           // command, not a workstream defect — retry before spending a
@@ -975,16 +1000,29 @@ export async function buildProgram(
           }
           if (verifyResult.exitCode !== 0) {
             verified = false;
-            failedCommand = command;
-            failureReason = `It failed independent verification; the failing command was: ${command}`;
-            failureOutput = verifyResult.output;
+            verificationFailures.push({
+              command,
+              output: verifyResult.output,
+            });
             logStream.write(
               `=== verification failed: ${command} ===\n${tail(verifyResult.output)}\n`,
             );
             progress(`${workstream.id} verify ${name}: FAILED (${command})`);
-            break;
+          } else {
+            progress(`${workstream.id} verify ${name}: ok`);
           }
-          progress(`${workstream.id} verify ${name}: ok`);
+        }
+        if (verificationFailures.length > 0) {
+          failedCommand = verificationFailures[0]?.command;
+          failureReason = `It failed independent verification; the failing commands were:\n${verificationFailures
+            .map(({ command }) => `  - ${command}`)
+            .join("\n")}`;
+          failureOutput = verificationFailures
+            .map(
+              ({ command, output }) =>
+                `=== ${command} ===\n${tail(output)}`,
+            )
+            .join("\n\n");
         }
       }
     } finally {

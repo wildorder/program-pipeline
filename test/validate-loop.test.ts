@@ -6,7 +6,9 @@ import type { AgentInvocation, CommandResult } from "../src/agent-runner.js";
 import { fingerprint, type Finding } from "../src/findings.js";
 import {
   extractJson,
+  hasArrayKey,
   parseCriticFindings,
+  parseCriticReply,
   parseWriterVerdict,
   validateLoop,
 } from "../src/validate-loop.js";
@@ -31,6 +33,91 @@ None.
 ## Acceptance Criteria
 1. Validation exits successfully.
 `;
+
+describe("extractJson block selection", () => {
+  const answer = {
+    findings: [
+      {
+        severity: "blocker",
+        category: "coverage",
+        subject: "SC-02",
+        message: "No workstream covers SC-02.",
+        evidence: [{ kind: "concern", named: "uncovered criterion" }],
+      },
+    ],
+  };
+
+  /** A critic citing a manifest fragment as evidence, after its answer. */
+  const withTrailingJson = [
+    "I found a problem.",
+    "```json",
+    JSON.stringify(answer),
+    "```",
+    "For reference, WS-04 declares:",
+    "```json",
+    '{ "id": "WS-04", "dependencies": ["WS-01"] }',
+    "```",
+  ].join("\n");
+
+  it("takes the last parseable block when no shape is requested", () => {
+    expect(extractJson(withTrailingJson)).toEqual({
+      id: "WS-04",
+      dependencies: ["WS-01"],
+    });
+  });
+
+  it("skips blocks that do not match the requested shape", () => {
+    expect(
+      extractJson(withTrailingJson, (value) => hasArrayKey(value, "findings")),
+    ).toEqual(answer);
+  });
+
+  it("keeps the critic's findings when another json block follows them", () => {
+    // The regression: this returned zero findings, the loop read that as a
+    // clean round, and a blocker was reported as PASSED.
+    const reply = parseCriticReply(withTrailingJson);
+    expect(reply.found).toBe(true);
+    expect(reply.findings).toHaveLength(1);
+    expect(reply.findings[0]?.severity).toBe("blocker");
+  });
+
+  it("distinguishes an unreadable reply from a genuinely clean one", () => {
+    expect(parseCriticReply('```json\n{"findings":[]}\n```')).toEqual({
+      found: true,
+      findings: [],
+    });
+    expect(parseCriticReply("Looks good to me!").found).toBe(false);
+    expect(parseCriticReply('```json\n{"notes":[]}\n```').found).toBe(false);
+  });
+
+  it("prefers the last matching block when the critic revises itself", () => {
+    const reply = [
+      "```json",
+      '{"findings":[]}',
+      "```",
+      "Actually, on reflection:",
+      "```json",
+      JSON.stringify(answer),
+      "```",
+    ].join("\n");
+    expect(parseCriticReply(reply).findings).toHaveLength(1);
+  });
+
+  it("shape-matches the writer verdict too", () => {
+    const reply = [
+      "```json",
+      '{"applied":["abc"],"rejected":[]}',
+      "```",
+      "```json",
+      '{"unrelated":true}',
+      "```",
+    ].join("\n");
+    const verdict = parseWriterVerdict(reply);
+    expect(verdict.found).toBe(true);
+    expect(verdict.applied).toEqual(["abc"]);
+    expect(parseWriterVerdict("I made the edits.").found).toBe(false);
+  });
+});
 
 async function project(
   overrides: {
@@ -269,6 +356,79 @@ describe("convergence loop", () => {
       },
     };
   }
+
+  const BLOCKER_REPLY = [
+    "```json",
+    JSON.stringify({
+      findings: [
+        {
+          severity: "blocker",
+          category: "coverage",
+          subject: "SC-02",
+          message: "No workstream covers SC-02.",
+          evidence: [{ kind: "concern", named: "uncovered criterion" }],
+        },
+      ],
+    }),
+    "```",
+  ].join("\n");
+
+  it("fails rather than passing when the critic's reply cannot be parsed", async () => {
+    const root = await project();
+    const { runner } = recorder(["I reviewed everything and it looks fine."]);
+
+    const result = await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: runner,
+    });
+
+    // The gate must never pass on a critique that never arrived. Reporting
+    // this as "no findings" is what turned an unreadable reply into PASSED.
+    expect(result.outcome).toBe("aborted");
+    expect(result.result).toBe("FAILED");
+    expect(result.reason).toContain("no findings block");
+  });
+
+  it("fails when the writer's verdict cannot be parsed", async () => {
+    const root = await project();
+    const { runner } = recorder([BLOCKER_REPLY, "I made the edits."]);
+
+    const result = await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: runner,
+    });
+
+    expect(result.outcome).toBe("aborted");
+    expect(result.result).toBe("FAILED");
+    expect(result.reason).toContain("no verdict block");
+  });
+
+  it("still reads the findings when the critic quotes json after them", async () => {
+    const root = await project();
+    const { runner, calls } = recorder([
+      `${BLOCKER_REPLY}\n\nFor reference, WS-04 declares:\n\n\`\`\`json\n{ "id": "WS-04", "dependencies": ["WS-01"] }\n\`\`\``,
+      '```json\n{"applied":[],"rejected":[]}\n```',
+    ]);
+
+    const result = await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      rounds: 1,
+      agentRunner: runner,
+    });
+
+    // The finding survived the trailing block, so the round counted as having
+    // found something: a writer ran instead of the loop declaring it clean.
+    // (The PASSED/FAILED verdict itself comes from the deterministic
+    // validator over the final tree, not from a model finding.)
+    expect(result.findings.some(({ subject }) => subject === "SC-02")).toBe(
+      true,
+    );
+    expect(calls).toHaveLength(2);
+    expect(result.outcome).not.toBe("aborted");
+  });
 
   it("converges when the first round finds nothing new", async () => {
     const root = await project();

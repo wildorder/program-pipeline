@@ -111,14 +111,28 @@ export interface ValidateLoopOptions {
 }
 
 /**
- * Model replies wrap JSON in prose and fences. Take the last fenced json
- * block, else the last balanced brace span.
+ * Model replies wrap JSON in prose and fences. Scan fenced blocks from the
+ * last backwards and return the first that parses **and** matches `accept`,
+ * else the last balanced brace span.
+ *
+ * The predicate is not optional in practice, and leaving it out was a real
+ * defect. "Last parseable fenced block" silently picks the wrong one the
+ * moment a reply contains any other JSON after its answer — a critic quoting
+ * a manifest fragment as evidence, say. The parse then finds no `findings`
+ * key, reports zero findings, and the loop reads that as a clean round and
+ * returns PASSED. A validation gate that fails open is worse than one that
+ * fails, so callers state the shape they want and a reply that never
+ * produces it is a protocol failure, not a clean bill of health.
  */
-export function extractJson(output: string): unknown {
+export function extractJson(
+  output: string,
+  accept: (value: unknown) => boolean = () => true,
+): unknown {
   const fences = [...output.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/gu)];
   for (const match of fences.reverse()) {
     try {
-      return JSON.parse(match[1] ?? "");
+      const value: unknown = JSON.parse(match[1] ?? "");
+      if (accept(value)) return value;
     } catch {
       continue;
     }
@@ -127,12 +141,22 @@ export function extractJson(output: string): unknown {
   const end = output.lastIndexOf("}");
   if (start >= 0 && end > start) {
     try {
-      return JSON.parse(output.slice(start, end + 1));
+      const value: unknown = JSON.parse(output.slice(start, end + 1));
+      if (accept(value)) return value;
     } catch {
       return undefined;
     }
   }
   return undefined;
+}
+
+/** True when `value` is an object whose `key` is an array. */
+export function hasArrayKey(value: unknown, key: string): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Array.isArray((value as Record<string, unknown>)[key])
+  );
 }
 
 const SEVERITIES = new Set<Severity>(["blocker", "major", "minor", "advisory"]);
@@ -174,12 +198,24 @@ function coerceEvidence(raw: unknown): Evidence[] {
   return evidence;
 }
 
+export interface CriticReply {
+  /**
+   * False when the reply contained no block matching the findings contract.
+   * Callers must not treat that as "zero findings" — it means the critique
+   * never arrived, which is the opposite of a clean review.
+   */
+  found: boolean;
+  findings: Finding[];
+}
+
 /** Parse a critic reply, discarding anything that does not fit the contract. */
-export function parseCriticFindings(output: string): Finding[] {
-  const parsed = extractJson(output);
-  if (typeof parsed !== "object" || parsed === null) return [];
+export function parseCriticReply(output: string): CriticReply {
+  const parsed = extractJson(output, (value) => hasArrayKey(value, "findings"));
+  if (typeof parsed !== "object" || parsed === null) {
+    return { found: false, findings: [] };
+  }
   const raw = (parsed as { findings?: unknown }).findings;
-  if (!Array.isArray(raw)) return [];
+  if (!Array.isArray(raw)) return { found: false, findings: [] };
   const findings: Finding[] = [];
   for (const item of raw) {
     if (typeof item !== "object" || item === null) continue;
@@ -203,17 +239,27 @@ export function parseCriticFindings(output: string): Finding[] {
       ...(record.requiresReplan === true ? { requiresReplan: true } : {}),
     });
   }
-  return findings;
+  return { found: true, findings };
+}
+
+/** Findings only, for callers that treat an unparseable reply as empty. */
+export function parseCriticFindings(output: string): Finding[] {
+  return parseCriticReply(output).findings;
 }
 
 export interface WriterVerdict {
   applied: string[];
   rejected: Array<{ id: string; reason: string }>;
+  /** False when the reply contained no block matching the verdict contract. */
+  found: boolean;
 }
 
 export function parseWriterVerdict(output: string): WriterVerdict {
-  const parsed = extractJson(output);
-  const empty: WriterVerdict = { applied: [], rejected: [] };
+  const parsed = extractJson(
+    output,
+    (value) => hasArrayKey(value, "applied") || hasArrayKey(value, "rejected"),
+  );
+  const empty: WriterVerdict = { applied: [], rejected: [], found: false };
   if (typeof parsed !== "object" || parsed === null) return empty;
   const record = parsed as Record<string, unknown>;
   const applied = Array.isArray(record.applied)
@@ -235,7 +281,7 @@ export function parseWriterVerdict(output: string): WriterVerdict {
         ];
       })
     : [];
-  return { applied, rejected };
+  return { applied, rejected, found: true };
 }
 
 interface Role {
@@ -409,9 +455,19 @@ export async function validateLoop(
     const criticSummary: AgentSummary = resolveSummary(criticResult.output);
     progress(`round ${round}: critic says: ${summaryLine(criticSummary)}`);
 
-    const raised = applySeverityPolicy(
-      parseCriticFindings(criticResult.output),
-    ).map(identify);
+    // A reply with no parseable findings block is a protocol failure, not a
+    // clean review. Reporting it as "no findings" would converge the loop and
+    // return PASSED on a critique that never arrived — the gate failing open.
+    const criticReply = parseCriticReply(criticResult.output);
+    if (!criticReply.found) {
+      return aborted(
+        options.programId,
+        `Critic agent (${critic.label}) returned no findings block matching the contract, so its critique could not be read. This is reported as a failure rather than as a clean round: a gate that cannot parse its critic must not pass. Output tail: ${tail(criticResult.output, 800)}`,
+        { rounds, strict, findings: [...seen.values()] },
+      );
+    }
+
+    const raised = applySeverityPolicy(criticReply.findings).map(identify);
 
     const replan = raised.filter((finding) => finding.requiresReplan === true);
     const fresh = raised.filter(
@@ -489,6 +545,16 @@ export async function validateLoop(
     progress(`round ${round}: writer says: ${summaryLine(writerSummary)}`);
 
     const verdict = parseWriterVerdict(writerResult.output);
+    // Same reasoning as the critic: an unreadable verdict is not "applied
+    // nothing, declined nothing". The writer may well have edited the specs,
+    // so continuing would leave the loop's record of what happened wrong.
+    if (!verdict.found) {
+      return aborted(
+        options.programId,
+        `Writer agent (${writer.label}) returned no verdict block matching the contract, so which findings it applied or declined could not be read. Inspect the working tree before re-running — the specs may already have been edited. Output tail: ${tail(writerResult.output, 800)}`,
+        { rounds, strict, findings: [...seen.values()] },
+      );
+    }
     for (const { id, reason: declined } of verdict.rejected) {
       const finding = seen.get(id);
       if (!finding) continue;

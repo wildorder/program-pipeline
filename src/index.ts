@@ -192,9 +192,12 @@ export {
 } from "./severity-policy.js";
 export {
   extractJson,
+  hasArrayKey,
   parseCriticFindings,
+  parseCriticReply,
   parseWriterVerdict,
   validateLoop,
+  type CriticReply,
   type Disagreement,
   type LoopOutcome,
   type ResolvedAgents,

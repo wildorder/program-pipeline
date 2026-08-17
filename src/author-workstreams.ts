@@ -30,7 +30,7 @@ import {
   type DependencyEdge,
   type UnmetRequirement,
 } from "./reconcile-dependencies.js";
-import { extractJson } from "./validate-loop.js";
+import { extractJson, hasArrayKey } from "./validate-loop.js";
 import { SPEC_CONTRACT } from "./validate.js";
 
 /**
@@ -179,7 +179,15 @@ export function readScope(
  * a dependency edge that later gets written into the manifest.
  */
 export function parseDeclaration(output: string): AuthorDeclaration {
-  const parsed = extractJson(output);
+  // Shape-matched, so a spec fragment the author quotes after its declaration
+  // cannot be mistaken for the declaration itself.
+  const parsed = extractJson(
+    output,
+    (value) =>
+      hasArrayKey(value, "dependencies") ||
+      hasArrayKey(value, "needs") ||
+      hasArrayKey(value, "unmet"),
+  );
   const empty: AuthorDeclaration = {
     dependencies: [],
     needs: [],

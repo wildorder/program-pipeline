@@ -552,6 +552,59 @@ authoring skill, for example). The runner spawns processes and needs a
 concrete command, so `models.author: opus-5` has no effect on `converge` —
 that is what `authorAgent` is for.
 
+### Amazon Bedrock through Cline
+
+Program Pipeline does not implement a model API or coding-agent runtime. To use
+Amazon Bedrock, install and configure an external coding-agent CLI that supports
+it, such as [Cline](https://docs.cline.bot/usage/cli-overview), then point an
+agent block at that executable just as you would for Claude Code or Codex.
+
+Install Cline separately and configure its Bedrock provider:
+
+```sh
+npm install --global cline
+cline auth
+```
+
+In Cline, select AWS Bedrock, the authentication method, AWS region, and model.
+For an IAM Identity Center/SSO profile, authenticate the cached AWS session
+before running the pipeline:
+
+```sh
+aws sso login --profile engineering-sso
+```
+
+Then make the provider and model choice explicit in `pipeline.config.json`:
+
+```json
+{
+  "agent": {
+    "command": "cline",
+    "args": [
+      "--yolo",
+      "--provider",
+      "bedrock",
+      "--model",
+      "us.anthropic.claude-sonnet-4-6"
+    ],
+    "promptMode": "stdin"
+  }
+}
+```
+
+`--yolo` makes the invocation headless, auto-approves tools, and exits when the
+task finishes. Cline accepts the pipeline brief on stdin and owns repository
+exploration, context management, file editing, command execution, and Bedrock
+communication. Program Pipeline continues to own briefs, orchestration,
+verification, logs, status, recovery, and commits.
+
+Cline owns its provider authentication settings; Program Pipeline neither reads
+nor writes Cline's internal configuration or AWS credentials. Keep access keys,
+bearer tokens, and cached SSO tokens out of `pipeline.config.json`. Users may
+omit `--provider` and `--model` to accept their saved Cline defaults, but explicit
+values make automated pipeline runs reproducible. The selected AWS identity must
+be allowed to invoke the configured Bedrock model or inference profile.
+
 **Model names.** The pipeline has no model registry; every name belongs to
 the namespace of the tool that consumes it. Args in `agent` and
 `authorAgent` are whatever that CLI accepts — prefer stable aliases over

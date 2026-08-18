@@ -139,7 +139,9 @@ Reply with one fenced \`\`\`json block and nothing that matters outside it:
       "workstreamId": "WS-01",
       "requiresReplan": false
     }
-  ]
+  ],
+  "requirementsChangeRequested": false,
+  "requirementsChangeReason": "only when a user requirement or success criterion itself must change"
 }
 
 \`\`\`
@@ -154,6 +156,13 @@ ${expectedWorkstreamIds.join(", ") || "(none)"}. An unsafe assessment is a
 structural failure even if the findings array accidentally omits it. Do not
 mark a checkpoint safe merely because the final program state is coherent;
 judge the repository immediately after that workstream alone.
+
+Set "requirementsChangeRequested" to true only when resolving the critique
+requires changing the user's stated requirements or success criteria. That is
+not an automatic replan: explain the decision in "requirementsChangeReason"
+and do not expect the replanner to edit it. For ordinary structural defects
+(scope, ownership, dependencies, or migration order), leave it false and use
+"requiresReplan" on the affected findings.
 `.trim();
 }
 

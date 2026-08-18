@@ -100,17 +100,23 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
     readFile(manifestPath, "utf8"),
     readFile(programPath, "utf8"),
   ]);
-  if (hashRequirements(beforeManifest) !== hashRequirements(afterManifest)) {
-    return { result: "FAILED", reason: "Replanner changed success criteria; requirements are immutable during automatic replanning.", agent: label, changedPaths: [] };
-  }
   const parsed = JSON.parse(afterManifest) as { program?: { planGeneration?: unknown } };
+  if (hashRequirements(beforeManifest) !== hashRequirements(afterManifest)) {
+    return {
+      result: "FAILED",
+      reason: "Replanner changed success criteria; automatic replanning is blocked. A human requirements decision is required.",
+      agent: label,
+      changedPaths: [],
+    };
+  }
   let generation = typeof parsed.program?.planGeneration === "string" ? parsed.program.planGeneration : "";
   if (!generation) {
     parsed.program = { ...(parsed.program ?? {}), planGeneration: `auto-${new Date().toISOString()}-${randomUUID().slice(0, 8)}` };
     generation = parsed.program.planGeneration as string;
     await atomicWriteText(manifestPath, `${JSON.stringify(parsed, null, 2)}\n`);
   }
-  if (afterManifest === beforeManifest && afterProgram === beforeProgram) {
+  const finalManifest = await readFile(manifestPath, "utf8");
+  if (finalManifest === beforeManifest && afterProgram === beforeProgram) {
     return { result: "FAILED", reason: "Replanner made no changes to the program document or manifest.", agent: label, generation, changedPaths: [] };
   }
   const summary = resolveSummary(result.output);

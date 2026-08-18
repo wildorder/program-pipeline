@@ -94,6 +94,7 @@ describe("extractJson block selection", () => {
       findings: [],
       checkpointAssessments: [],
       missingAssessments: [],
+      requirementsChangeRequested: false,
     });
     expect(parseCriticReply("Looks good to me!").found).toBe(false);
     expect(parseCriticReply('```json\n{"notes":[]}\n```').found).toBe(false);

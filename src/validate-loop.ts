@@ -109,6 +109,8 @@ export interface ValidateLoopResult {
   criticLogs: string[];
   /** Durable handoff consumed by plan-program after requires-replan. */
   replanReport?: string;
+  /** Critic says the user's requirements need a human decision. */
+  requirementsChangeRequested?: boolean;
 }
 
 export interface ValidateLoopOptions {
@@ -304,6 +306,8 @@ export interface CriticReply {
   findings: Finding[];
   checkpointAssessments: CheckpointAssessment[];
   missingAssessments: string[];
+  requirementsChangeRequested: boolean;
+  requirementsChangeReason?: string;
   protocolFailure?: CriticProtocolFailure;
 }
 
@@ -328,6 +332,7 @@ export function parseCriticReply(
       findings: [],
       checkpointAssessments: [],
       missingAssessments: [...expectedWorkstreamIds],
+      requirementsChangeRequested: false,
       ...(extraction.failure === undefined
         ? {}
         : { protocolFailure: extraction.failure }),
@@ -341,6 +346,7 @@ export function parseCriticReply(
       findings: [],
       checkpointAssessments: [],
       missingAssessments: [...expectedWorkstreamIds],
+      requirementsChangeRequested: false,
     };
   }
   const findings: Finding[] = [];
@@ -393,6 +399,12 @@ export function parseCriticReply(
     missingAssessments: expectedWorkstreamIds.filter(
       (id) => !assessmentById.has(id),
     ),
+    requirementsChangeRequested:
+      parsedRecord.requirementsChangeRequested === true,
+    ...(typeof parsedRecord.requirementsChangeReason === "string" &&
+    parsedRecord.requirementsChangeReason.trim() !== ""
+      ? { requirementsChangeReason: parsedRecord.requirementsChangeReason.trim() }
+      : {}),
   };
 }
 
@@ -683,6 +695,23 @@ export async function validateLoop(
         options.programId,
         `Critic agent (${critic.label}) response remained unreadable after one contract-correction retry (${finalProtocolError}). The gate failed closed. Full responses: ${criticLogs.slice(-2).join(", ") || "could not be written"}.`,
         { rounds, strict, findings: [...seen.values()], criticLogs },
+      );
+    }
+
+    if (criticReply.requirementsChangeRequested) {
+      const requirementReason =
+        criticReply.requirementsChangeReason ??
+        "The critic requested a change to user requirements or success criteria.";
+      progress(`round ${round}: requirements decision required; automatic replan stopped`);
+      return aborted(
+        options.programId,
+        `Convergence requests a human requirements decision and will not automatically replan: ${requirementReason}`,
+        {
+          rounds,
+          strict,
+          findings: [...seen.values()],
+          criticLogs,
+        },
       );
     }
 

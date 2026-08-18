@@ -316,9 +316,33 @@ export async function runProgram(
         `specs(${options.programId}): author workstreams`,
       );
       if (result.result === "REQUIRES_REPLAN") {
+        const depth = options.automaticReplans ?? 0;
+        if (depth < 2 && result.replanReport) {
+          progress(`automatic replan ${depth + 1}/2: updating plan artifacts`);
+          try {
+            const replanned = await replanProgram({
+              cwd: root,
+              programId: options.programId,
+              ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
+              onProgress: progress,
+            });
+            if (replanned.result === "COMPLETE") {
+              const resumed = await runProgram({
+                ...options,
+                from: "author",
+                automaticReplans: depth + 1,
+              });
+              stages.push(...resumed.stages);
+              return finish(resumed.result, resumed.reason);
+            }
+            progress(`automatic replan failed: ${replanned.reason ?? "unknown error"}`);
+          } catch (error) {
+            progress(`automatic replan failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
         return finish(
           "FAILED",
-          `Authoring needs the program replanned before it can continue. ${result.reason ?? ""} Re-plan with /plan-program, then run again.`.trim(),
+          `Authoring needs the program replanned before it can continue. ${result.reason ?? ""}${result.replanReport ? ` Replan report: ${result.replanReport}` : ""}`.trim(),
         );
       }
       if (result.result !== "COMPLETE") {

@@ -37,6 +37,8 @@ import {
 import { extractJson, hasArrayKey } from "./validate-loop.js";
 import { SPEC_CONTRACT } from "./validate.js";
 import { ignoredArtifacts } from "./artifact-status.js";
+import { identify } from "./findings.js";
+import { writeReplanReport } from "./replan-report.js";
 import {
   LEGACY_PLAN_GENERATION,
   legacyGenerationFingerprint,
@@ -131,6 +133,7 @@ export interface AuthorProgramResult {
   /** Non-atomic scopes or unsafe migration ordering reported by authors. */
   replan?: Array<{ workstreamId: string; reason: string }>;
   eventsPath?: string;
+  replanReport?: string;
   /** Canonical plan/spec artifacts read or written by this run. */
   artifactPaths?: string[];
   /** Artifacts hidden by the repository's ignore rules. */
@@ -763,6 +766,29 @@ export async function authorWorkstreams(
       progress(
         `pass ${pass}: workstream scope is not independently green: ${detail}`,
       );
+      const replanReport = await writeReplanReport(
+        root,
+        options.programId,
+        config,
+        {
+          summary: `Authoring found ${requestedReplan.length} structural checkpoint defect(s) before convergence.`,
+          replanFindings: requestedReplan.map(({ workstreamId, reason }) =>
+            identify({
+              severity: "blocker",
+              category: "scope-structure",
+              subject: `Author checkpoint ${workstreamId}`,
+              message: reason,
+              evidence: [{ kind: "concern", named: "author-declared unsafe checkpoint", detail: workstreamId }],
+              workstreamId,
+              requiresReplan: true,
+            }),
+          ),
+          relatedFindings: [],
+          checkpointAssessments: [],
+          criticSummary: detail,
+          criticLogs: [eventsPath],
+        },
+      );
       return {
         programId: options.programId,
         result: "REQUIRES_REPLAN",
@@ -772,6 +798,7 @@ export async function authorWorkstreams(
         outcomes,
         reconciliation,
         replan: requestedReplan,
+        replanReport: replanReport.path,
         eventsPath,
       };
     }

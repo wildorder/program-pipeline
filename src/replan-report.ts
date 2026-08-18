@@ -56,11 +56,20 @@ export async function writeReplanReport(
   now: () => Date = () => new Date(),
 ): Promise<{ path: string; report: ReplanReport }> {
   const path = replanReportPath(root, programId);
+  let inputHash: string;
+  try {
+    inputHash = await convergenceInputHash(root, programId, config);
+  } catch {
+    // Author-stage replans may intentionally reference specs that have not
+    // been authored yet. The report remains durable; convergence will create
+    // the authoritative receipt after the replacement plan is complete.
+    inputHash = "pending-author-replan";
+  }
   const report: ReplanReport = {
     schemaVersion: REPLAN_REPORT_VERSION,
     programId,
     generatedAt: now().toISOString(),
-    inputHash: await convergenceInputHash(root, programId, config),
+    inputHash,
     outcome: "requires-replan",
     summary: input.summary,
     replanFindings: input.replanFindings,

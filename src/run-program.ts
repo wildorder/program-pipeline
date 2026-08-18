@@ -344,6 +344,7 @@ export async function runProgram(
         cwd: root,
         programId: options.programId,
         ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
+        ...(options.now ? { now: options.now } : {}),
         onProgress: progress,
       });
       await record(

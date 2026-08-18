@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   defaultAgentRunner,
@@ -35,6 +36,7 @@ import {
 import { applySeverityPolicy } from "./severity-policy.js";
 import { validateWorkstreams } from "./validate.js";
 import {
+  composeCriticCorrectionBrief,
   composeCriticBrief,
   composeWriterBrief,
   loadBriefSources,
@@ -102,6 +104,8 @@ export interface ValidateLoopResult {
   replanFindings: IdentifiedFinding[];
   /** Written only after the complete semantic and mechanical gate passes. */
   convergenceReceipt?: string;
+  /** Full critic responses, including protocol-repair attempts. */
+  criticLogs: string[];
 }
 
 export interface ValidateLoopOptions {
@@ -111,6 +115,104 @@ export interface ValidateLoopOptions {
   strict?: boolean;
   agentRunner?: AgentRunner;
   onProgress?: (line: string) => void;
+  now?: () => Date;
+}
+
+export type CriticProtocolFailureKind =
+  | "missing-json"
+  | "invalid-json"
+  | "contract-mismatch";
+
+export interface CriticProtocolFailure {
+  kind: CriticProtocolFailureKind;
+  message: string;
+}
+
+interface JsonExtraction {
+  value?: unknown;
+  failure?: CriticProtocolFailure;
+}
+
+function balancedObjectCandidates(output: string): string[] {
+  const candidates: string[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < output.length; index += 1) {
+    const character = output[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (character === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        candidates.push(output.slice(start, index + 1));
+        start = -1;
+      }
+    }
+  }
+  return candidates;
+}
+
+function jsonError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function extractJsonDetailed(
+  output: string,
+  accept: (value: unknown) => boolean,
+): JsonExtraction {
+  const fences = [...output.matchAll(/```([^\r\n`]*)\r?\n([\s\S]*?)```/gu)]
+    .filter((match) => {
+      const language = (match[1] ?? "").trim().toLowerCase();
+      return language === "" || language === "json";
+    })
+    .map((match) => match[2] ?? "");
+  const candidates = [...fences, ...balancedObjectCandidates(output)];
+  let parsedWrongShape = false;
+  let lastParseError: string | undefined;
+  for (const candidate of candidates.reverse()) {
+    try {
+      const value: unknown = JSON.parse(candidate);
+      if (accept(value)) return { value };
+      parsedWrongShape = true;
+    } catch (error) {
+      lastParseError ??= jsonError(error);
+    }
+  }
+  if (lastParseError !== undefined) {
+    return {
+      failure: {
+        kind: "invalid-json",
+        message: `JSON was present but malformed: ${lastParseError}`,
+      },
+    };
+  }
+  if (parsedWrongShape) {
+    return {
+      failure: {
+        kind: "contract-mismatch",
+        message: 'JSON parsed, but no object contained the required "findings" array.',
+      },
+    };
+  }
+  return {
+    failure: {
+      kind: "missing-json",
+      message: "No JSON object was present in the critic response.",
+    },
+  };
 }
 
 /**
@@ -131,26 +233,7 @@ export function extractJson(
   output: string,
   accept: (value: unknown) => boolean = () => true,
 ): unknown {
-  const fences = [...output.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/gu)];
-  for (const match of fences.reverse()) {
-    try {
-      const value: unknown = JSON.parse(match[1] ?? "");
-      if (accept(value)) return value;
-    } catch {
-      continue;
-    }
-  }
-  const start = output.indexOf("{");
-  const end = output.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    try {
-      const value: unknown = JSON.parse(output.slice(start, end + 1));
-      if (accept(value)) return value;
-    } catch {
-      return undefined;
-    }
-  }
-  return undefined;
+  return extractJsonDetailed(output, accept).value;
 }
 
 /** True when `value` is an object whose `key` is an array. */
@@ -211,6 +294,7 @@ export interface CriticReply {
   findings: Finding[];
   checkpointAssessments: CheckpointAssessment[];
   missingAssessments: string[];
+  protocolFailure?: CriticProtocolFailure;
 }
 
 export interface CheckpointAssessment {
@@ -224,13 +308,19 @@ export function parseCriticReply(
   output: string,
   expectedWorkstreamIds: readonly string[] = [],
 ): CriticReply {
-  const parsed = extractJson(output, (value) => hasArrayKey(value, "findings"));
+  const extraction = extractJsonDetailed(output, (value) =>
+    hasArrayKey(value, "findings"),
+  );
+  const parsed = extraction.value;
   if (typeof parsed !== "object" || parsed === null) {
     return {
       found: false,
       findings: [],
       checkpointAssessments: [],
       missingAssessments: [...expectedWorkstreamIds],
+      ...(extraction.failure === undefined
+        ? {}
+        : { protocolFailure: extraction.failure }),
     };
   }
   const parsedRecord = parsed as Record<string, unknown>;
@@ -448,6 +538,34 @@ export async function validateLoop(
   let outcome: LoopOutcome = "cap-reached";
   let reason: string | undefined;
   const replanFindings: IdentifiedFinding[] = [];
+  const criticLogs: string[] = [];
+  const stamp = (options.now?.() ?? new Date())
+    .toISOString()
+    .replace(/[:.]/gu, "-");
+  const convergenceRunId = `${stamp}-${randomUUID().slice(0, 8)}`;
+  const logDir = resolve(root, config.build.logDir);
+
+  const preserveCriticResponse = async (
+    round: number,
+    attempt: number,
+    output: string,
+  ): Promise<string | undefined> => {
+    const path = join(
+      logDir,
+      `${options.programId}-converge-${convergenceRunId}-round-${round}-critic-attempt-${attempt}.log`,
+    );
+    try {
+      await mkdir(logDir, { recursive: true });
+      await writeFile(path, output, { encoding: "utf8", flag: "wx" });
+      criticLogs.push(path);
+      return path;
+    } catch (error) {
+      progress(
+        `WARNING: could not preserve critic response at ${path}: ${jsonError(error)}`,
+      );
+      return undefined;
+    }
+  };
 
   for (let round = 1; round <= totalRounds; round += 1) {
     // Rounds through `scopeDownAfterRound` always cover the whole program.
@@ -495,44 +613,65 @@ export async function validateLoop(
       }`,
     );
 
-    const criticResult = await runAgent({
-      command: critic.agent.command,
-      args: critic.agent.args,
-      prompt: composeCriticBrief(sources, context),
-      promptMode: critic.agent.promptMode,
-      cwd: root,
-    });
-    if (criticResult.exitCode !== 0) {
-      return aborted(
-        options.programId,
-        `Critic agent (${critic.label}) exited ${criticResult.exitCode}: ${tail(criticResult.output, 800)}`,
-        { rounds, strict, findings: [...seen.values()] },
+    let criticPrompt = composeCriticBrief(sources, context);
+    let criticReply: CriticReply | undefined;
+    let criticSummary: AgentSummary | undefined;
+    let finalProtocolError = "";
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const criticResult = await runAgent({
+        command: critic.agent.command,
+        args: critic.agent.args,
+        prompt: criticPrompt,
+        promptMode: critic.agent.promptMode,
+        cwd: root,
+      });
+      const criticLog = await preserveCriticResponse(
+        round,
+        attempt,
+        criticResult.output,
       );
+      if (criticResult.exitCode !== 0) {
+        return aborted(
+          options.programId,
+          `Critic agent (${critic.label})${attempt === 2 ? " correction retry" : ""} exited ${criticResult.exitCode}. Full response: ${criticLog ?? "could not be written"}. Output tail: ${tail(criticResult.output, 800)}`,
+          { rounds, strict, findings: [...seen.values()], criticLogs },
+        );
+      }
+
+      criticSummary = resolveSummary(criticResult.output);
+      progress(
+        `round ${round}: critic${attempt === 2 ? " correction" : ""} says: ${summaryLine(criticSummary)}`,
+      );
+      const parsedReply = parseCriticReply(
+        criticResult.output,
+        context.expectedWorkstreamIds,
+      );
+      finalProtocolError = !parsedReply.found
+        ? `${parsedReply.protocolFailure?.kind ?? "contract-mismatch"}: ${parsedReply.protocolFailure?.message ?? "The required findings block could not be read."}`
+        : parsedReply.missingAssessments.length > 0
+          ? `missing-assessments: omitted checkpoint assessments for ${parsedReply.missingAssessments.join(", ")}`
+          : "";
+      if (finalProtocolError === "") {
+        criticReply = parsedReply;
+        break;
+      }
+      if (attempt === 1) {
+        progress(
+          `round ${round}: critic protocol failure (${finalProtocolError}); retrying once to correct the response contract. Full response: ${criticLog ?? "could not be written"}`,
+        );
+        criticPrompt = composeCriticCorrectionBrief(
+          criticResult.output,
+          context.expectedWorkstreamIds,
+          finalProtocolError,
+        );
+      }
     }
 
-    const criticSummary: AgentSummary = resolveSummary(criticResult.output);
-    progress(`round ${round}: critic says: ${summaryLine(criticSummary)}`);
-
-    // A reply with no parseable findings block is a protocol failure, not a
-    // clean review. Reporting it as "no findings" would converge the loop and
-    // return PASSED on a critique that never arrived — the gate failing open.
-    const criticReply = parseCriticReply(
-      criticResult.output,
-      context.expectedWorkstreamIds,
-    );
-    if (!criticReply.found) {
+    if (!criticReply || !criticSummary) {
       return aborted(
         options.programId,
-        `Critic agent (${critic.label}) returned no findings block matching the contract, so its critique could not be read. This is reported as a failure rather than as a clean round: a gate that cannot parse its critic must not pass. Output tail: ${tail(criticResult.output, 800)}`,
-        { rounds, strict, findings: [...seen.values()] },
-      );
-    }
-
-    if (criticReply.missingAssessments.length > 0) {
-      return aborted(
-        options.programId,
-        `Critic agent (${critic.label}) omitted checkpoint assessments for: ${criticReply.missingAssessments.join(", ")}. Every in-scope workstream must be judged from the repository state immediately after that workstream alone; a partial assessment cannot pass.`,
-        { rounds, strict, findings: [...seen.values()] },
+        `Critic agent (${critic.label}) response remained unreadable after one contract-correction retry (${finalProtocolError}). The gate failed closed. Full responses: ${criticLogs.slice(-2).join(", ") || "could not be written"}.`,
+        { rounds, strict, findings: [...seen.values()], criticLogs },
       );
     }
 
@@ -642,7 +781,7 @@ export async function validateLoop(
       return aborted(
         options.programId,
         `Writer agent (${writer.label}) exited ${writerResult.exitCode}: ${tail(writerResult.output, 800)}`,
-        { rounds, strict, findings: [...seen.values()] },
+        { rounds, strict, findings: [...seen.values()], criticLogs },
       );
     }
 
@@ -657,7 +796,7 @@ export async function validateLoop(
       return aborted(
         options.programId,
         `Writer agent (${writer.label}) returned no verdict block matching the contract, so which findings it applied or declined could not be read. Inspect the working tree before re-running — the specs may already have been edited. Output tail: ${tail(writerResult.output, 800)}`,
-        { rounds, strict, findings: [...seen.values()] },
+        { rounds, strict, findings: [...seen.values()], criticLogs },
       );
     }
     for (const { id, reason: declined } of verdict.rejected) {
@@ -734,7 +873,7 @@ export async function validateLoop(
         `Convergence passed but its receipt could not be written: ${
           error instanceof Error ? error.message : String(error)
         }`,
-        { rounds, strict, findings: combined },
+        { rounds, strict, findings: combined, criticLogs },
       );
     }
   }
@@ -751,6 +890,7 @@ export async function validateLoop(
     openDisagreements: [...disagreements.values()],
     replanFindings,
     ...(convergenceReceipt === undefined ? {} : { convergenceReceipt }),
+    criticLogs,
   };
 }
 
@@ -769,6 +909,7 @@ function aborted(
     rounds: RoundRecord[];
     strict: boolean;
     findings: IdentifiedFinding[];
+    criticLogs?: string[];
   },
 ): ValidateLoopResult {
   return {
@@ -781,6 +922,7 @@ function aborted(
     findings: partial?.findings ?? [],
     openDisagreements: [],
     replanFindings: [],
+    criticLogs: partial?.criticLogs ?? [],
   };
 }
 

@@ -604,6 +604,13 @@ and semantic configuration. Direct `build` refuses a missing or stale receipt;
 `run --from build` automatically inserts deterministic validation and
 convergence before invoking an implementation agent.
 
+Critic responses are protocol-checked. If JSON is missing, malformed, has the
+wrong contract, or omits checkpoint assessments, the same critic gets one
+correction-only retry without repeating the review. Every original and retry
+response is preserved verbatim in
+`build-logs/{program-id}-converge-*-round-*-critic-attempt-*.log`; if the retry
+still fails, the abort names the exact protocol failure and those log paths.
+
 Findings the writer declined and the critic then re-raised are reported as
 **open disagreements** for a human to settle, rather than resolved by whoever
 edits last.

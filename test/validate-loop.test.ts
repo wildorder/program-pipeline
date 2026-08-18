@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -97,6 +97,26 @@ describe("extractJson block selection", () => {
     });
     expect(parseCriticReply("Looks good to me!").found).toBe(false);
     expect(parseCriticReply('```json\n{"notes":[]}\n```').found).toBe(false);
+  });
+
+  it("diagnoses missing, malformed, and contract-mismatched JSON", () => {
+    expect(parseCriticReply("Looks good to me!").protocolFailure).toMatchObject({
+      kind: "missing-json",
+    });
+    expect(
+      parseCriticReply('```json\n{"findings":[}\n```').protocolFailure,
+    ).toMatchObject({ kind: "invalid-json" });
+    expect(
+      parseCriticReply('```json\n{"notes":[]}\n```').protocolFailure,
+    ).toMatchObject({ kind: "contract-mismatch" });
+  });
+
+  it("accepts uppercase JSON fences and CRLF output", () => {
+    const reply = parseCriticReply(
+      `\`\`\`JSON\r\n${JSON.stringify(answer)}\r\n\`\`\``,
+    );
+    expect(reply.found).toBe(true);
+    expect(reply.findings).toHaveLength(1);
   });
 
   it("prefers the last matching block when the critic revises itself", () => {
@@ -419,7 +439,8 @@ describe("convergence loop", () => {
 
   it("fails rather than passing when the critic's reply cannot be parsed", async () => {
     const root = await project();
-    const { runner } = recorder(["I reviewed everything and it looks fine."]);
+    const unreadable = "I reviewed everything and it looks fine.";
+    const { runner, calls } = recorder([unreadable, unreadable]);
 
     const result = await validateLoop({
       cwd: root,
@@ -431,12 +452,43 @@ describe("convergence loop", () => {
     // this as "no findings" is what turned an unreadable reply into PASSED.
     expect(result.outcome).toBe("aborted");
     expect(result.result).toBe("FAILED");
-    expect(result.reason).toContain("no findings block");
+    expect(result.reason).toContain("missing-json");
+    expect(result.reason).toContain("after one contract-correction retry");
+    expect(calls).toHaveLength(2);
+    expect(result.criticLogs).toHaveLength(2);
+    await expect(readFile(result.criticLogs[0]!, "utf8")).resolves.toBe(
+      unreadable,
+    );
+  });
+
+  it("repairs one malformed critic response without repeating the review", async () => {
+    const root = await project();
+    const malformed =
+      '```json\n{"checkpointAssessments":[],"findings":[}\n```\n```summary\nFound one issue.\n```';
+    const { runner, calls } = recorder([malformed, criticReply([])]);
+    const lines: string[] = [];
+
+    const result = await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: runner,
+      onProgress: (line) => lines.push(line),
+    });
+
+    expect(result.outcome).toBe("converged");
+    expect(result.result).toBe("PASSED");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.prompt).toContain("Correct your previous validation response");
+    expect(calls[1]?.prompt).toContain(malformed);
+    expect(calls[1]?.prompt).toContain("Do not review the program again");
+    expect(lines.some((line) => line.includes("retrying once"))).toBe(true);
+    expect(result.criticLogs).toHaveLength(2);
   });
 
   it("fails rather than passing when a workstream assessment is missing", async () => {
     const root = await project();
     const { runner, calls } = recorder([
+      '```json\n{"checkpointAssessments":[],"findings":[]}\n```',
       '```json\n{"checkpointAssessments":[],"findings":[]}\n```',
     ]);
 
@@ -448,8 +500,9 @@ describe("convergence loop", () => {
 
     expect(result.outcome).toBe("aborted");
     expect(result.result).toBe("FAILED");
-    expect(result.reason).toContain("omitted checkpoint assessments for: WS-01");
-    expect(calls).toHaveLength(1);
+    expect(result.reason).toContain("missing-assessments");
+    expect(result.reason).toContain("WS-01");
+    expect(calls).toHaveLength(2);
   });
 
   it("turns an unsafe checkpoint assessment into an immediate replan", async () => {

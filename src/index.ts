@@ -247,6 +247,8 @@ export {
   parseWriterVerdict,
   validateLoop,
   type CriticReply,
+  type CriticProtocolFailure,
+  type CriticProtocolFailureKind,
   type Disagreement,
   type LoopOutcome,
   type ResolvedAgents,
@@ -257,6 +259,7 @@ export {
 } from "./validate-loop.js";
 export {
   composeCriticBrief,
+  composeCriticCorrectionBrief,
   composeWriterBrief,
   loadBriefSources,
   type BriefSources,

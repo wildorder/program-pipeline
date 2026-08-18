@@ -1,4 +1,5 @@
-import { mkdir, rm } from "node:fs/promises";
+import { access, mkdir, rename, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { convergenceInputHash } from "./convergence-receipt.js";
 import type { IdentifiedFinding } from "./findings.js";
@@ -21,10 +22,16 @@ export interface ReplanReport {
   criticSummary: string;
   criticLogs: string[];
   planningInstruction: string;
+  /** Archived report this handoff superseded, when one existed. */
+  supersedes?: string;
 }
 
 export function replanReportPath(root: string, programId: string): string {
   return join(resolve(root), "docs", "programs", `${programId}-replan.json`);
+}
+
+export function replanHistoryDir(root: string, programId: string): string {
+  return join(resolve(root), "docs", "programs", `${programId}-replan-history`);
 }
 
 /** Remove the generated handoff once the replacement plan converges. */
@@ -56,6 +63,19 @@ export async function writeReplanReport(
   now: () => Date = () => new Date(),
 ): Promise<{ path: string; report: ReplanReport }> {
   const path = replanReportPath(root, programId);
+  let supersedes: string | undefined;
+  try {
+    await access(path);
+    const archive = join(
+      replanHistoryDir(root, programId),
+      `${now().toISOString().replace(/[:.]/gu, "-")}-${randomUUID().slice(0, 8)}.json`,
+    );
+    await mkdir(dirname(archive), { recursive: true });
+    await rename(path, archive);
+    supersedes = archive.replace(`${resolve(root)}\\`, "").replaceAll("\\", "/");
+  } catch {
+    // No prior report, or it disappeared between access and rename.
+  }
   let inputHash: string;
   try {
     inputHash = await convergenceInputHash(root, programId, config);
@@ -78,6 +98,7 @@ export async function writeReplanReport(
     criticSummary: input.criticSummary,
     criticLogs: input.criticLogs.map((log) => portableLogPath(root, log)),
     planningInstruction: `Run /plan-program ${programId}. The planning skill must read this report and resolve every replanFindings entry before replacing the program plan and manifest.`,
+    ...(supersedes === undefined ? {} : { supersedes }),
   };
   await mkdir(dirname(path), { recursive: true });
   await atomicWriteText(path, `${JSON.stringify(report, null, 2)}\n`);

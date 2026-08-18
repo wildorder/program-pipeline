@@ -115,6 +115,7 @@ export {
   REPLAN_REPORT_VERSION,
   clearReplanReport,
   replanReportPath,
+  replanHistoryDir,
   writeReplanReport,
   type ReplanReport,
 } from "./replan-report.js";

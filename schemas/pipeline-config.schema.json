@@ -38,6 +38,20 @@
         "promptMode": { "enum": ["stdin", "argument"] }
       }
     },
+    "recoveryAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "description": "Handles build recovery attempts. When absent, recovery reuses the normal build agent; configure a different provider or model to escape primary-agent capacity failures.",
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "promptMode": { "enum": ["stdin", "argument"] }
+      }
+    },
     "authorAgent": {
       "type": "object",
       "additionalProperties": false,
@@ -82,13 +96,32 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "maxRecoveryAttempts": { "type": "integer", "minimum": 0 },
-        "verifyRetries": { "type": "integer", "minimum": 0 },
+        "maxRecoveryAttempts": { "type": "integer", "minimum": 0, "default": 1 },
+        "verifyRetries": { "type": "integer", "minimum": 0, "default": 0 },
         "logDir": { "type": "string", "minLength": 1 },
         "commit": { "type": "boolean" },
         "critiqueTests": {
           "type": "boolean",
           "description": "Have the validator agent critique the workstream diff's tests before the runner commits. A passing suite proves little when the same agent wrote both the implementation and its tests."
+        },
+        "requireCriteriaApproval": {
+          "type": "boolean",
+          "description": "Refuse to build until this program's acceptance criteria have been approved."
+        },
+        "executionProfile": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Provider-neutral working-set limits used to judge whether one agent invocation can safely carry a workstream.",
+          "properties": {
+            "contextWindowTokens": { "type": "integer", "minimum": 1, "default": 250000 },
+            "targetWorkingSetTokens": { "type": "integer", "minimum": 1, "default": 100000 },
+            "cautionWorkingSetTokens": { "type": "integer", "minimum": 1, "default": 140000 },
+            "hardWorkingSetTokens": { "type": "integer", "minimum": 1, "default": 190000 },
+            "toleranceTokens": { "type": "integer", "minimum": 0, "default": 10000 },
+            "bytesPerToken": { "type": "number", "exclusiveMinimum": 0, "default": 4 },
+            "byteEstimateUncertainty": { "type": "number", "minimum": 0, "exclusiveMaximum": 1, "default": 0.25 },
+            "missingNewFileTokens": { "type": "integer", "minimum": 0, "default": 4000 }
+          }
         }
       }
     },

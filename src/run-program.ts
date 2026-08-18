@@ -4,6 +4,7 @@ import { updateAsBuilt } from "./as-built.js";
 import { authorWorkstreams } from "./author-workstreams.js";
 import { buildProgram } from "./build-program.js";
 import { reviewCriteria } from "./criteria.js";
+import { inspectConvergenceReceipt } from "./convergence-receipt.js";
 import { loadPipelineConfig, type PipelineConfig } from "./pipeline-config.js";
 import { reviewProgram } from "./review-program.js";
 import { validateLoop } from "./validate-loop.js";
@@ -211,6 +212,31 @@ export async function runProgram(
       "FAILED",
       `No stages to run: --from ${options.from ?? "(start)"} comes after --to ${options.to ?? "(end)"}.`,
     );
+  }
+
+  if (planned.includes("build") && !planned.includes("converge")) {
+    let receipt;
+    try {
+      receipt = await inspectConvergenceReceipt(
+        root,
+        options.programId,
+        config,
+      );
+    } catch (error) {
+      return finish(
+        "FAILED",
+        `Could not inspect semantic convergence inputs: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    if (!receipt.valid) {
+      const buildIndex = planned.indexOf("build");
+      planned.splice(buildIndex, 0, "validate", "converge");
+      progress(
+        `semantic convergence receipt is ${receipt.reason ?? "invalid"}; automatically running validate and converge before build`,
+      );
+    }
   }
 
   const logDir = config.build.logDir;

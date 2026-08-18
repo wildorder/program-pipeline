@@ -130,6 +130,24 @@ export function resolveAgent(config: PipelineConfig): AgentConfig | undefined {
   return undefined;
 }
 
+export interface ResolvedRecoveryAgent {
+  agent: AgentConfig;
+  /** True when no dedicated recovery agent was configured. */
+  borrowedBuildAgent: boolean;
+}
+
+/** Recovery agent, falling back explicitly to the normal build agent. */
+export function resolveRecoveryAgent(
+  config: PipelineConfig,
+): ResolvedRecoveryAgent | undefined {
+  if (config.recoveryAgent) {
+    return { agent: config.recoveryAgent, borrowedBuildAgent: false };
+  }
+  const build = resolveAgent(config);
+  if (build) return { agent: build, borrowedBuildAgent: true };
+  return undefined;
+}
+
 export interface ResolvedAuthorAgent {
   agent: AgentConfig;
   /**

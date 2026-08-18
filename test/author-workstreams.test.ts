@@ -145,6 +145,7 @@ function writesSpecs(
       dependencies: [],
       needs: [],
       unmet: [],
+      replan: [],
       ...declaration,
     });
     return {
@@ -169,6 +170,7 @@ function declaringAgent(
       dependencies: [],
       needs: [],
       unmet: [],
+      replan: [],
       ...(declarations[id] ?? {}),
     });
     return {
@@ -209,12 +211,13 @@ describe("readScope", () => {
 describe("parseDeclaration", () => {
   it("reads the three lists out of a fenced json block", () => {
     const output = `\`\`\`json
-{ "dependencies": ["WS-03"], "needs": ["WS-12"], "unmet": ["rotation"] }
+{ "dependencies": ["WS-03"], "needs": ["WS-12"], "unmet": ["rotation"], "replan": ["unsafe removal order"] }
 \`\`\``;
     expect(parseDeclaration(output)).toEqual({
       dependencies: ["WS-03"],
       needs: ["WS-12"],
       unmet: ["rotation"],
+      replan: ["unsafe removal order"],
     });
   });
 
@@ -227,6 +230,7 @@ describe("parseDeclaration", () => {
       dependencies: ["WS-03"],
       needs: [],
       unmet: [],
+      replan: [],
     });
   });
 
@@ -235,6 +239,7 @@ describe("parseDeclaration", () => {
       dependencies: [],
       needs: [],
       unmet: [],
+      replan: [],
     });
   });
 
@@ -319,6 +324,7 @@ describe("authorWorkstreams", () => {
       ["WS-02", "authored"],
       ["WS-03", "authored"],
     ]);
+    expect(report.outcomes.every(({ executionFit }) => executionFit?.classification === "normal")).toBe(true);
     await expect(
       readFile(join(root, "tasks", "alpha", "ws-03.md"), "utf8"),
     ).resolves.toContain("WS-03");
@@ -341,6 +347,9 @@ describe("authorWorkstreams", () => {
     expect(brief).toContain("WS-02 inclusion");
     expect(brief).toContain("WS-02 exclusion");
     expect(brief).toContain("what exists");
+    expect(brief).toContain("## Checkpoint Safety");
+    expect(brief).toContain("expand -> migrate -> contract/delete");
+    expect(brief).toContain("structural defect through");
   });
 
   it("gives a dependent workstream its dependencies' finished specs", async () => {
@@ -391,6 +400,7 @@ describe("authorWorkstreams", () => {
       dependencies: ["WS-01"],
       needs: ["WS-02"],
       unmet: ["token rotation"],
+      replan: [],
     });
     expect(report.outcomes[0]?.summary).toBe("Wrote WS-01.");
   });
@@ -468,6 +478,34 @@ describe("authorWorkstreams", () => {
     // Level two must never author against specs level one failed to write.
     expect(seen).not.toContain("WS-03");
     expect(report.reason).toContain("later levels depend on these specs");
+  });
+
+  it("returns to planning before later levels for an unsafe checkpoint", async () => {
+    const root = await fixture();
+    const seen: string[] = [];
+    const delegate = declaringAgent(root, {
+      "WS-01": {
+        replan: ["deletes the shared type before its consumers migrate"],
+      },
+    });
+    const report = await authorWorkstreams({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        seen.push(targetOf(invocation.prompt).id);
+        return delegate(invocation);
+      },
+    });
+
+    expect(report.result).toBe("REQUIRES_REPLAN");
+    expect(report.replan).toEqual([
+      {
+        workstreamId: "WS-01",
+        reason: "deletes the shared type before its consumers migrate",
+      },
+    ]);
+    expect(report.reason).toContain("independently green checkpoints");
+    expect(seen).not.toContain("WS-03");
   });
 
   it("fails the attempt when the prompt could not be delivered", async () => {
@@ -587,6 +625,7 @@ describe("authorWorkstreams", () => {
             dependencies: [],
             needs: [],
             unmet: [],
+            replan: [],
             ...declaration,
           })}\n\`\`\`\n\n\`\`\`summary\nWrote ${id}.\n\`\`\`\n`,
         };

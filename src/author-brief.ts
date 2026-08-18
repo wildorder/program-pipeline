@@ -71,13 +71,20 @@ Do not include other workstream specs or program documents.]
 [Target package or directory.]
 
 ## Files Touched
-[One list item per touched file: \`- \\\`path/to/file.ts\\\` (NEW)\` or
-\`(MODIFY — optional short note)\`. Only list items are validated as file
+[One list item per touched file: \`- \\\`path/to/file.ts\\\` (NEW)\`,
+\`(MODIFY — optional short note)\`, or \`(DELETE)\`. Only list items are validated as file
 entries; keep context about untouched files in prose, not bullets.]
 
 ## Existing Interfaces to Consume
-[Paste 10-30 lines of the actual interfaces consumed from existing code.
-Omit only when this is the first program and no relevant code exists.]
+[Name the canonical source path and symbol for each existing interface this
+workstream consumes. Inline only the exact new or changed contract needed to
+implement this workstream; do not copy large unchanged source excerpts.]
+
+## Checkpoint Safety
+[Explain why the repository is green after this workstream alone, starting
+from a green tree containing only its declared dependencies. State how old
+and new surfaces coexist while later workstreams remain unbuilt. A later
+workstream must never be needed to restore build, typecheck, tests, or lint.]
 
 ## Implementation Steps
 [Precise, intentionally ordered, numbered steps.]
@@ -95,14 +102,17 @@ const AUTHORING_RULES = `
 The section names, ID formats, and file annotations are the contract enforced
 by \`program-pipeline validate\`. The validator is canonical: do not rename
 the required sections (\`${SPEC_CONTRACT.sections.traceability}\`,
+\`${SPEC_CONTRACT.sections.checkpointSafety}\`,
 \`${SPEC_CONTRACT.sections.filesTouched}\`, \`${SPEC_CONTRACT.sections.tests}\`,
 \`${SPEC_CONTRACT.sections.acceptanceCriteria}\`) and do not change the
-\`SC-xx\` / \`WS-xx\` / \`(NEW)\` / \`(MODIFY)\` formats.
+\`SC-xx\` / \`WS-xx\` / \`(NEW)\` / \`(MODIFY)\` / \`(DELETE)\` formats.
 
 - Make the spec self-contained. An implementation agent reading it, AGENTS.md,
   and its Context Files must have everything it needs.
-- Inline actual interface definitions rather than pointing at their files.
-- Mark every file \`(NEW)\` or \`(MODIFY)\`.
+- Name canonical paths and symbols for existing interfaces. Inline only the
+  exact new or changed contract an implementation agent needs; do not copy
+  large unchanged source excerpts.
+- Mark every file \`(NEW)\`, \`(MODIFY)\`, or \`(DELETE)\`.
 - Order implementation steps intentionally.
 - Include at least one program success-criterion ID in Traceability.
 
@@ -127,10 +137,27 @@ There is no line-count cap, and detail an implementation agent needs is not
 bloat. Never drop interfaces, steps, tests, or acceptance criteria to make a
 spec shorter.
 
-Write the spec for the workstream as scoped. Do not split it, do not absorb a
-neighbor's work, and do not edit the manifest. If the scope is genuinely
-wrong, say so in your summary and report it through \`unmet\` — that goes back
-to program planning.
+### Independently green checkpoints
+
+Every workstream is committed and verified before the next one starts. Write
+the spec so that, beginning with a green repository containing only its
+declared dependencies, this workstream alone leaves the repository green
+under every configured build, typecheck, test, and lint command. It may not
+leave broken consumers, temporary type errors, or tests for a later
+workstream to repair.
+
+For a shared interface migration, use an expand -> migrate -> contract/delete
+sequence: add a compatible surface first, migrate bounded consumer groups in
+independently green workstreams, and remove the legacy surface only after a
+final workstream depends on every consumer migration. A clean-break product
+requirement describes the final state; it does not justify a broken state
+between workstreams.
+
+Write the spec for the workstream as scoped. Do not silently split it, absorb
+a neighbor's work, or edit the manifest. If that scope cannot form an
+independently green checkpoint, explain the structural defect through
+\`replan\` instead of authoring an impossible spec. Use \`unmet\` only for a
+requirement no workstream provides.
 `.trim();
 
 function scopeBlock(scope: WorkstreamScope): string {
@@ -240,7 +267,8 @@ Then reply with one fenced \`\`\`json block:
 {
   "dependencies": ["WS-03"],
   "needs": ["WS-12"],
-  "unmet": ["token rotation for the admin session"]
+  "unmet": ["token rotation for the admin session"],
+  "replan": ["WS-04 deletes the shared type before WS-06 migrates its consumers"]
 }
 \`\`\`
 
@@ -258,6 +286,12 @@ interface you could have asked for is the failure.
 **unmet** — things this workstream requires that **no** workstream in the
 roster provides. That is a gap in the program, not in your spec; it goes back
 to planning. Leave the array empty unless you really checked the roster.
+
+**replan** — structural reasons this workstream cannot be implemented as one
+independently green checkpoint, including unsafe migration ordering or a
+scope that must be decomposed. Do not use it for ordinary implementation
+difficulty. When this list is non-empty, explain the issue precisely; the
+runner stops before later workstreams and returns the program to planning.
 `.trim();
 }
 

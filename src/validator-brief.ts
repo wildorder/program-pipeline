@@ -38,7 +38,28 @@ declaring the dependency, acceptance criteria cannot be objectively checked,
 or the tests as described would not catch a wrong implementation.
 
 **Minor** — real but survivable: ambiguous wording, unclear sequencing, prose
-duplicated from the program document, unrelated concerns bundled together.
+duplicated from the program document, or local implementation detail that
+does not threaten a green checkpoint.
+
+## Independently green checkpoints
+
+Judge every workstream from the state that actually exists when it starts: a
+green repository containing its declared dependencies, but none of the later
+workstreams. Applying that workstream alone must leave every configured build,
+typecheck, test, and lint command green. A later workstream may extend the
+result; it may never be required to repair broken consumers, temporary type
+errors, or failing tests introduced by this one.
+
+For shared interfaces and cross-cutting migrations, inspect the sequence as
+well as the final design. Safe plans use expand -> migrate -> contract/delete:
+add a compatible surface, migrate bounded consumer groups while both surfaces
+coexist, then remove the legacy surface only after the removal workstream
+depends on every consumer migration. A clean-break final product does not
+permit a broken intermediate checkpoint.
+
+An unsafe checkpoint, a workstream that must be decomposed to stay green, or
+destructive migration ordering is a **blocker** with \`requiresReplan: true\`.
+It cannot be repaired by adding prose to the existing spec.
 
 ## Evidence is required
 
@@ -89,7 +110,7 @@ program planning, and further rounds of spec polish on a workstream that
 should not exist in that shape are wasted.
 `.trim();
 
-function outputContract(): string {
+function outputContract(expectedWorkstreamIds: string[]): string {
   return `
 ## Output
 
@@ -97,6 +118,13 @@ Reply with one fenced \`\`\`json block and nothing that matters outside it:
 
 \`\`\`json
 {
+  "checkpointAssessments": [
+    {
+      "workstreamId": "WS-01",
+      "status": "safe" | "unsafe",
+      "reason": "why this workstream alone does or does not leave the repository green"
+    }
+  ],
   "findings": [
     {
       "severity": "blocker" | "major" | "minor",
@@ -119,6 +147,12 @@ Keep "subject" stable for the same underlying issue across rounds — it is how
 a re-raised finding is recognized as the same one, so do not reword it to
 describe the same problem differently. Return an empty findings array if you
 find nothing.
+
+Return exactly one checkpoint assessment for every workstream in this round:
+${expectedWorkstreamIds.join(", ") || "(none)"}. An unsafe assessment is a
+structural failure even if the findings array accidentally omits it. Do not
+mark a checkpoint safe merely because the final program state is coherent;
+judge the repository immediately after that workstream alone.
 `.trim();
 }
 
@@ -201,6 +235,8 @@ export interface RoundContext {
   round: number;
   totalRounds: number;
   scoped: boolean;
+  /** Every workstream whose checkpoint safety must be assessed this round. */
+  expectedWorkstreamIds: string[];
   /** Findings the writer declined last round, with the reason given. */
   openDisagreements: Array<{ finding: Finding; reason: string }>;
   /** Everything already raised, so the critic does not simply repeat it. */
@@ -255,7 +291,7 @@ export function composeCriticBrief(
     "",
     sourceSection(sources),
     "",
-    outputContract(),
+    outputContract(context.expectedWorkstreamIds),
     "",
     summaryContract(),
   ]

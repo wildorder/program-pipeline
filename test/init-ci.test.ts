@@ -101,6 +101,23 @@ describe("initGitHubCi", () => {
     );
   });
 
+  it("installs a CLI used only by the recovery agent", async () => {
+    const root = await fixture({
+      agent: { command: "codex" },
+      recoveryAgent: { command: "claude" },
+      authorAgent: { command: "codex" },
+      validatorAgent: { command: "codex" },
+    });
+
+    const result = await initGitHubCi({ cwd: root, force: false });
+
+    expect(result.agents).toEqual(["codex", "claude"]);
+    const workflow = await readFile(join(root, result.path), "utf8");
+    expect(workflow).toContain(
+      '"@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"',
+    );
+  });
+
   it("uses an explicit setup command and warns about unknown agent commands", async () => {
     const root = await fixture({
       agent: {
@@ -139,5 +156,13 @@ describe("initGitHubCi", () => {
     await expect(
       initGitHubCi({ cwd: root, force: false }),
     ).rejects.toThrow("pipeline.config.json is invalid");
+  });
+
+  it("rejects a malformed recovery agent configuration", async () => {
+    const root = await fixture({ recoveryAgent: { args: [] } });
+
+    await expect(
+      initGitHubCi({ cwd: root, force: false }),
+    ).rejects.toThrow("recoveryAgent.command");
   });
 });

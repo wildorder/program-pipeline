@@ -28,6 +28,9 @@ ${goal}
 ## Traceability
 - SC-01
 
+## Checkpoint Safety
+The repository remains green without work from a later workstream.
+
 ## Files Touched
 - \`src/example.ts\` (NEW)
 

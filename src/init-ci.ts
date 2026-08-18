@@ -121,7 +121,12 @@ function normalizedCommand(command: string): string {
 }
 
 function configuredCommands(config: PipelineConfig): string[] {
-  return [config.agent, config.authorAgent, config.validatorAgent]
+  return [
+    config.agent,
+    config.recoveryAgent,
+    config.authorAgent,
+    config.validatorAgent,
+  ]
     .filter((agent): agent is AgentConfig => agent !== undefined)
     .map(({ command }) => normalizedCommand(command))
     .filter((command, index, commands) => commands.indexOf(command) === index);

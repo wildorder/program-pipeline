@@ -27,6 +27,9 @@ None.
 ## Files Touched
 - \`src/core.ts\` (NEW)
 
+## Checkpoint Safety
+The change is additive, so existing consumers and verification remain green.
+
 ## Tests
 1. Scenario: valid input. Expected: accepted. Assert: result passes.
 
@@ -36,6 +39,9 @@ None.
 
 describe("extractJson block selection", () => {
   const answer = {
+    checkpointAssessments: [
+      { workstreamId: "WS-01", status: "safe", reason: "additive change" },
+    ],
     findings: [
       {
         severity: "blocker",
@@ -79,12 +85,15 @@ describe("extractJson block selection", () => {
     expect(reply.found).toBe(true);
     expect(reply.findings).toHaveLength(1);
     expect(reply.findings[0]?.severity).toBe("blocker");
+    expect(reply.checkpointAssessments).toHaveLength(1);
   });
 
   it("distinguishes an unreadable reply from a genuinely clean one", () => {
     expect(parseCriticReply('```json\n{"findings":[]}\n```')).toEqual({
       found: true,
       findings: [],
+      checkpointAssessments: [],
+      missingAssessments: [],
     });
     expect(parseCriticReply("Looks good to me!").found).toBe(false);
     expect(parseCriticReply('```json\n{"notes":[]}\n```').found).toBe(false);
@@ -176,8 +185,18 @@ async function project(
   return root;
 }
 
-function criticReply(findings: Array<Partial<Finding>>): string {
+function criticReply(
+  findings: Array<Partial<Finding>>,
+  checkpointAssessments: Array<Record<string, unknown>> = [
+    {
+      workstreamId: "WS-01",
+      status: "safe",
+      reason: "the change is additive and leaves existing consumers intact",
+    },
+  ],
+): string {
   return `Here is my review.\n\n\`\`\`json\n${JSON.stringify({
+    checkpointAssessments,
     findings: findings.map((finding) => ({
       severity: "major",
       category: "test-quality",
@@ -252,6 +271,15 @@ describe("reply parsing", () => {
     expect(finding?.requiresReplan).toBe(true);
   });
 
+  it("reports every expected workstream whose checkpoint assessment is missing", () => {
+    const reply = parseCriticReply(
+      '```json\n{"checkpointAssessments":[],"findings":[]}\n```',
+      ["WS-01", "WS-02"],
+    );
+    expect(reply.found).toBe(true);
+    expect(reply.missingAssessments).toEqual(["WS-01", "WS-02"]);
+  });
+
   it("defaults a missing rejection reason rather than dropping the rejection", () => {
     const verdict = parseWriterVerdict(
       '```json\n{"applied":[],"rejected":[{"id":"abc"}]}\n```',
@@ -272,6 +300,7 @@ describe("brief composition", () => {
     round: 1,
     totalRounds: 2,
     scoped: false,
+    expectedWorkstreamIds: ["WS-01"],
     openDisagreements: [],
     alreadyRaised: [],
   };
@@ -297,6 +326,14 @@ describe("brief composition", () => {
     expect(composeCriticBrief(sources, context)).toContain(
       "Do not recommend truncating a spec",
     );
+  });
+
+  it("requires a green checkpoint assessment for every workstream", () => {
+    const brief = composeCriticBrief(sources, context);
+    expect(brief).toContain("expand -> migrate -> contract/delete");
+    expect(brief).toContain("none of the later");
+    expect(brief).toContain("exactly one checkpoint assessment");
+    expect(brief).toContain("WS-01");
   });
 
   it("surfaces open disagreements to the critic from round two on", () => {
@@ -350,7 +387,7 @@ describe("convergence loop", () => {
       calls,
       runner: async (invocation: AgentInvocation) => {
         calls.push(invocation);
-        const output = replies[index] ?? '```json\n{"findings":[]}\n```';
+        const output = replies[index] ?? criticReply([]);
         index += 1;
         return { exitCode: 0, output };
       },
@@ -360,6 +397,13 @@ describe("convergence loop", () => {
   const BLOCKER_REPLY = [
     "```json",
     JSON.stringify({
+      checkpointAssessments: [
+        {
+          workstreamId: "WS-01",
+          status: "safe",
+          reason: "the checkpoint preserves the green repository",
+        },
+      ],
       findings: [
         {
           severity: "blocker",
@@ -388,6 +432,53 @@ describe("convergence loop", () => {
     expect(result.outcome).toBe("aborted");
     expect(result.result).toBe("FAILED");
     expect(result.reason).toContain("no findings block");
+  });
+
+  it("fails rather than passing when a workstream assessment is missing", async () => {
+    const root = await project();
+    const { runner, calls } = recorder([
+      '```json\n{"checkpointAssessments":[],"findings":[]}\n```',
+    ]);
+
+    const result = await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: runner,
+    });
+
+    expect(result.outcome).toBe("aborted");
+    expect(result.result).toBe("FAILED");
+    expect(result.reason).toContain("omitted checkpoint assessments for: WS-01");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("turns an unsafe checkpoint assessment into an immediate replan", async () => {
+    const root = await project();
+    const { runner, calls } = recorder([
+      criticReply([], [
+        {
+          workstreamId: "WS-01",
+          status: "unsafe",
+          reason: "removes the shared type before consumers migrate",
+        },
+      ]),
+    ]);
+
+    const result = await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: runner,
+    });
+
+    expect(result.outcome).toBe("requires-replan");
+    expect(result.result).toBe("FAILED");
+    expect(result.replanFindings[0]).toMatchObject({
+      severity: "blocker",
+      category: "scope-structure",
+      workstreamId: "WS-01",
+      requiresReplan: true,
+    });
+    expect(calls).toHaveLength(1);
   });
 
   it("fails when the writer's verdict cannot be parsed", async () => {
@@ -432,7 +523,7 @@ describe("convergence loop", () => {
 
   it("converges when the first round finds nothing new", async () => {
     const root = await project();
-    const { runner, calls } = recorder(['```json\n{"findings":[]}\n```']);
+    const { runner, calls } = recorder([criticReply([])]);
     const result = await validateLoop({
       cwd: root,
       programId: "alpha",
@@ -502,6 +593,7 @@ describe("convergence loop", () => {
       agentRunner: runner,
     });
     expect(result.outcome).toBe("cap-reached");
+    expect(result.result).toBe("FAILED");
     expect(result.rounds).toHaveLength(2);
   });
 
@@ -518,9 +610,10 @@ describe("convergence loop", () => {
       rounds: 3,
       agentRunner: runner,
     });
-    // Round 2's critique is the same finding in different words, so the loop
-    // recognizes a round with nothing new and converges instead of looping.
-    expect(result.outcome).toBe("converged");
+    // The identity is stable, but an unchanged blocker/major is unresolved —
+    // it cannot be mistaken for a clean convergence round.
+    expect(result.outcome).toBe("cap-reached");
+    expect(result.result).toBe("FAILED");
     expect(result.rounds).toHaveLength(2);
   });
 
@@ -612,7 +705,7 @@ describe("convergence loop", () => {
   it("warns loudly when it has to borrow the build agent for spec critique", async () => {
     const root = await project({ authorAgent: null });
     const lines: string[] = [];
-    const { runner } = recorder(['```json\n{"findings":[]}\n```']);
+    const { runner } = recorder([criticReply([])]);
     const result = await validateLoop({
       cwd: root,
       programId: "alpha",
@@ -627,7 +720,7 @@ describe("convergence loop", () => {
   it("names both resolved agents before spending anything", async () => {
     const root = await project();
     const lines: string[] = [];
-    const { runner } = recorder(['```json\n{"findings":[]}\n```']);
+    const { runner } = recorder([criticReply([])]);
     await validateLoop({
       cwd: root,
       programId: "alpha",
@@ -677,7 +770,7 @@ describe("convergence loop", () => {
     // Remove the spec the manifest points at: a blocker the loop cannot talk
     // its way out of, since the gate is decided by the deterministic pass.
     await rm(join(root, "tasks", "alpha", "ws-01-core.md"));
-    const { runner } = recorder(['```json\n{"findings":[]}\n```']);
+    const { runner } = recorder([criticReply([])]);
     const result = await validateLoop({
       cwd: root,
       programId: "alpha",

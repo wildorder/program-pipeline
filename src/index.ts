@@ -4,6 +4,7 @@ export {
   describeAgent,
   resolveAgent,
   resolveAuthorAgent,
+  resolveRecoveryAgent,
   resolveValidatorAgent,
   runProcess,
   sanitizedEnvironment,
@@ -12,6 +13,7 @@ export {
   type AgentRunner,
   type CommandResult,
   type ResolvedAuthorAgent,
+  type ResolvedRecoveryAgent,
   type VerifyRunner,
 } from "./agent-runner.js";
 export {
@@ -101,6 +103,15 @@ export {
   type WorkstreamCriteria,
 } from "./criteria.js";
 export {
+  CONVERGENCE_RECEIPT_VERSION,
+  convergenceInputHash,
+  convergenceReceiptPath,
+  inspectConvergenceReceipt,
+  writeConvergenceReceipt,
+  type ConvergenceReceipt,
+  type ConvergenceReceiptStatus,
+} from "./convergence-receipt.js";
+export {
   addDevDependencyCommand,
   detectPackageManager,
   isPnpmWorkspaceRoot,
@@ -121,6 +132,22 @@ export {
   type AgentConfig,
   type PipelineConfig,
 } from "./pipeline-config.js";
+export {
+  assessRepositoryExecutionFit,
+  declaredTouchedFiles,
+  DEFAULT_EXECUTION_FIT_POLICY,
+  estimateExecutionFit,
+  type ExecutionFitApproval,
+  type ExecutionFitClassification,
+  type ExecutionFitEstimate,
+  type ExecutionFitInput,
+  type ExecutionFitPolicy,
+  type ExecutionFitTextReader,
+  type DeclaredTouchedFile,
+  type RepositoryExecutionFitAssessment,
+  type RepositoryExecutionFitComponents,
+  type RepositoryExecutionFitInput,
+} from "./execution-fit.js";
 export {
   initProject,
   initOptionsSchema,

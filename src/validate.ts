@@ -30,6 +30,7 @@ export {
 export const SPEC_CONTRACT = {
   sections: {
     traceability: "Traceability",
+    checkpointSafety: "Checkpoint Safety",
     filesTouched: "Files Touched",
     tests: "Tests",
     acceptanceCriteria: "Acceptance Criteria",
@@ -37,7 +38,7 @@ export const SPEC_CONTRACT = {
   successCriterionIdPattern: "SC-\\d{2,}",
   workstreamIdPattern: "WS-\\d{2,}",
   /** A short note may follow the keyword: `(MODIFY — extend props)`. */
-  fileAnnotationPattern: "\\((?:NEW|MODIFY)\\b[^)]*\\)",
+  fileAnnotationPattern: "\\((?:NEW|MODIFY|DELETE)\\b[^)]*\\)",
   newFileAnnotationPattern: "\\(NEW\\b[^)]*\\)",
   /** Only list items count as file entries; other lines are commentary. */
   fileEntryPattern: "^\\s*(?:[-*]|\\d+\\.)\\s",
@@ -361,10 +362,29 @@ export async function validateWorkstreams(
         category: "spec-format",
         code: "files-annotation-missing",
         subject: SPEC_CONTRACT.sections.filesTouched,
-        message: "Every listed file must be annotated (NEW) or (MODIFY).",
+        message: "Every listed file must be annotated (NEW), (MODIFY), or (DELETE).",
         evidence: [
           because(
-            "a Files Touched list item lacks a (NEW) or (MODIFY) annotation",
+            "a Files Touched list item lacks a (NEW), (MODIFY), or (DELETE) annotation",
+            workstream.taskFile,
+          ),
+        ],
+        workstreamId: workstream.id,
+        file: taskPath,
+      });
+    }
+
+    if (!specSection(markdown, SPEC_CONTRACT.sections.checkpointSafety)) {
+      findings.push({
+        severity: "blocker",
+        category: "dependency",
+        code: "checkpoint-safety-missing",
+        subject: SPEC_CONTRACT.sections.checkpointSafety,
+        message:
+          "Missing or empty Checkpoint Safety section; the workstream must explain why all verification commands remain green before later workstreams run.",
+        evidence: [
+          because(
+            "independently-green checkpoint safety was not specified",
             workstream.taskFile,
           ),
         ],

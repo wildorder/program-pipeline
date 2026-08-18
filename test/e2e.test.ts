@@ -11,6 +11,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { writeConvergenceReceipt } from "../src/convergence-receipt.js";
+import { loadPipelineConfig } from "../src/pipeline-config.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STEP_TIMEOUT = 300_000;
@@ -195,6 +197,9 @@ describe("packaged CLI end to end", () => {
 ## Traceability
 - SC-01
 
+## Checkpoint Safety
+The repository remains green without work from a later workstream.
+
 ## Files Touched
 - (NEW) \`src/core.ts\`
 
@@ -242,6 +247,11 @@ process.stdin.on("end", () => {
         configPath,
         `${JSON.stringify(config, null, 2)}\n`,
         "utf8",
+      );
+      await writeConvergenceReceipt(
+        project,
+        "alpha",
+        await loadPipelineConfig(project),
       );
 
       const gated = await runCli(

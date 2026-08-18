@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import {
   access,
@@ -14,6 +14,7 @@ import {
   defaultVerifyRunner,
   describeAgent,
   resolveAgent,
+  resolveRecoveryAgent,
   resolveValidatorAgent,
   runProcess,
   tail,
@@ -29,10 +30,16 @@ import {
   type AgentSummary,
 } from "./agent-summary.js";
 import { criteriaGateFailure } from "./criteria.js";
+import { inspectConvergenceReceipt } from "./convergence-receipt.js";
+import {
+  assessRepositoryExecutionFit,
+  type ExecutionFitClassification,
+} from "./execution-fit.js";
 import type { Finding } from "./findings.js";
 import { stableTopologicalOrder } from "./graph.js";
 import {
   loadPipelineConfig,
+  type AgentConfig,
   type PipelineConfig,
 } from "./pipeline-config.js";
 import { critiqueTests } from "./test-critique.js";
@@ -77,6 +84,14 @@ export interface WorkstreamOutcome {
   attempts: number;
   agentExitCodes: number[];
   failedCommand?: string;
+  /** Per-run log containing prompts, agent output, and verification failures. */
+  logPath: string;
+  executionFit: {
+    classification: ExecutionFitClassification;
+    workingSetTokens: number;
+    lowerBoundTokens: number;
+    upperBoundTokens: number;
+  };
   /** Short SHA of the runner's commit for this workstream, when it committed. */
   commit?: string;
   /**
@@ -111,6 +126,8 @@ export interface BuildProgramResult {
   reason?: string;
   /** The resolved agent invocation (command and args), when configured. */
   agent?: string;
+  /** Dedicated recovery invocation, when it differs from the build agent. */
+  recoveryAgent?: string;
   plan: PlanEntry[];
   outcomes: WorkstreamOutcome[];
   /** Populated when `build.critiqueTests` is enabled. */
@@ -130,6 +147,104 @@ interface ManifestWorkstream {
 // the agent never got to work (usage limit, credentials, startup failure) —
 // an environmental failure, not the workstream's.
 const AGENT_ENVIRONMENT_FAILURE_MS = 30_000;
+
+interface AgentOutputSignal {
+  kind: "unverified" | "terminal";
+  reason: string;
+}
+
+const ANSI_ESCAPE = new RegExp(
+  `${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`,
+  "g",
+);
+
+function cleanOutput(output: string): string {
+  return output.replace(ANSI_ESCAPE, "");
+}
+
+/**
+ * Recognize provider-neutral failure statements printed by agent CLIs. Some
+ * CLIs exit zero after recording an explicitly unverified submission; a zero
+ * process status is not a successful implementation contract.
+ */
+export function classifyAgentOutput(output: string): AgentOutputSignal | undefined {
+  // Agent CLIs may echo prompts and tool output. Terminal status belongs at
+  // the end, so inspect only a bounded suffix to avoid matching quoted specs.
+  const clean = tail(cleanOutput(output), 4_000);
+  const terminalPatterns: Array<[RegExp, string]> = [
+    [
+      /maximum output token|(?:reached|exceeded).{0,40}(?:token|context).{0,20}limit|context window.{0,30}(?:exceeded|full)/i,
+      "the agent reached its token or context limit",
+    ],
+    [
+      /session limit|usage limit|rate limit|too many requests/i,
+      "the agent provider reported a usage, session, or rate limit",
+    ],
+    [
+      /invalid_payment_instrument|payment instrument|insufficient (?:credit|quota)/i,
+      "the agent provider rejected the account's payment or quota",
+    ],
+    [
+      /provided model identifier is invalid|model (?:identifier )?.{0,30}(?:invalid|not found|unsupported)/i,
+      "the configured agent model is invalid or unavailable",
+    ],
+    [
+      /authentication failed|unauthorized|invalid (?:api )?key|credentials? (?:missing|invalid|expired)/i,
+      "the agent provider rejected or could not find its credentials",
+    ],
+  ];
+  for (const [pattern, reason] of terminalPatterns) {
+    if (pattern.test(clean)) return { kind: "terminal", reason };
+  }
+  if (
+    /submission recorded\s*\(unverified\)/i.test(clean) ||
+    /["']verified["']\s*:\s*false/i.test(clean)
+  ) {
+    return {
+      kind: "unverified",
+      reason: "the agent explicitly reported that its submission was unverified",
+    };
+  }
+  return undefined;
+}
+
+function diagnosticLine(output: string): string | undefined {
+  const lines = cleanOutput(output)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const diagnostic =
+    lines.find((line) =>
+      /(?:\berror\b|\bfailed\b|\bfailure\b|exception|cannot find|TS\d{4})/i.test(
+        line,
+      ),
+    ) ?? lines[0];
+  if (diagnostic === undefined) return undefined;
+  return diagnostic.length > 240 ? `${diagnostic.slice(0, 237)}...` : diagnostic;
+}
+
+function verificationSignature(
+  failures: Array<{ command: string; output: string }>,
+): string {
+  const normalized = failures
+    .map(({ command, output }) =>
+      `${command}\n${cleanOutput(output)}`
+        .replace(/\b\d+(?:\.\d+)?\s*(?:ms|milliseconds?|s|seconds?)\b/gi, "<duration>")
+        .replace(/\s+/g, " ")
+        .trim(),
+    )
+    .join("\n");
+  return createHash("sha256").update(normalized).digest("hex");
+}
+
+function sameAgent(left: AgentConfig, right: AgentConfig): boolean {
+  return (
+    left.command === right.command &&
+    left.promptMode === right.promptMode &&
+    left.args.length === right.args.length &&
+    left.args.every((arg, index) => arg === right.args[index])
+  );
+}
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -533,7 +648,20 @@ export async function buildProgram(
 
   const agent = resolveAgent(config);
   const agentLabel = agent ? describeAgent(agent) : undefined;
-  const agentField = agentLabel === undefined ? {} : { agent: agentLabel };
+  const recovery = resolveRecoveryAgent(config);
+  const distinctRecovery =
+    agent !== undefined &&
+    recovery !== undefined &&
+    !sameAgent(agent, recovery.agent)
+      ? recovery.agent
+      : undefined;
+  const recoveryLabel = distinctRecovery
+    ? describeAgent(distinctRecovery)
+    : undefined;
+  const agentField = {
+    ...(agentLabel === undefined ? {} : { agent: agentLabel }),
+    ...(recoveryLabel === undefined ? {} : { recoveryAgent: recoveryLabel }),
+  };
 
   if (options.dryRun) {
     return {
@@ -564,6 +692,28 @@ export async function buildProgram(
     };
   }
 
+  let convergence;
+  try {
+    convergence = await inspectConvergenceReceipt(
+      root,
+      options.programId,
+      config,
+    );
+  } catch (error) {
+    return aborted(
+      `Could not verify semantic convergence inputs: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      plan,
+    );
+  }
+  if (!convergence.valid) {
+    return aborted(
+      `Semantic convergence receipt is ${convergence.reason ?? "invalid"} for ${options.programId}; the specifications or their planning context have not passed the current convergence gate. Run program-pipeline converge ${options.programId}, or use program-pipeline run ${options.programId} --from build to refresh it automatically.`,
+      plan,
+    );
+  }
+
   const verifyCommands = config.verify;
   if (Object.keys(verifyCommands).length === 0) {
     return aborted(
@@ -579,9 +729,57 @@ export async function buildProgram(
     );
   }
 
+  const executionFitById = new Map<
+    string,
+    WorkstreamOutcome["executionFit"]
+  >();
+  for (const entry of plan) {
+    if (entry.action !== "run") continue;
+    let assessment;
+    try {
+      assessment = await assessRepositoryExecutionFit(
+        {
+          root,
+          taskPath: entry.taskFile,
+          visionPath: config.visionPath,
+          contextDocs: config.contextDocs,
+        },
+        config.build.executionProfile,
+      );
+    } catch (error) {
+      return aborted(
+        `Could not estimate execution fit for ${entry.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        plan,
+      );
+    }
+    const fit = {
+      classification: assessment.classification,
+      workingSetTokens: assessment.workingSetTokens,
+      lowerBoundTokens: assessment.lowerBoundTokens,
+      upperBoundTokens: assessment.upperBoundTokens,
+    };
+    executionFitById.set(entry.id, fit);
+    if (assessment.hardFailure) {
+      return aborted(
+        `${entry.id} cannot fit the configured ${config.build.executionProfile.contextWindowTokens}-token context window even at the estimate's lower bound (${assessment.lowerBoundTokens} tokens). Split the workstream or configure an execution profile matching the actual agent capacity.`,
+        plan,
+      );
+    }
+    if (assessment.classification !== "normal") {
+      progress(
+        `${entry.id} execution fit: ${assessment.classification} at approximately ${assessment.workingSetTokens} tokens (${assessment.lowerBoundTokens}-${assessment.upperBoundTokens}); proceeding because only physical impossibility is a hard gate`,
+      );
+    }
+  }
+
   const logDir = join(root, config.build.logDir);
   await mkdir(logDir, { recursive: true });
-  const stamp = now().toISOString().replaceAll(":", "-").replace(/\.\d+Z$/u, "Z");
+  const stamp = `${now()
+    .toISOString()
+    .replaceAll(":", "-")
+    .replace(/\.\d+Z$/u, "Z")}-${randomUUID().slice(0, 8)}`;
   const eventsPath = join(logDir, `${options.programId}-build-${stamp}.jsonl`);
   const emit = async (
     event: string,
@@ -710,8 +908,12 @@ export async function buildProgram(
     }
     runIndex += 1;
     const workstream = byId.get(entry.id) as ManifestWorkstream;
-    const workstreamLog = join(logDir, `${options.programId}-${workstream.id}.log`);
-    const logStream = createWriteStream(workstreamLog, { flags: "a" });
+    const executionFit = executionFitById.get(workstream.id) as WorkstreamOutcome["executionFit"];
+    const workstreamLog = join(
+      logDir,
+      `${options.programId}-build-${stamp}-${workstream.id}.log`,
+    );
+    const logStream = createWriteStream(workstreamLog, { flags: "w" });
     const agentExitCodes: number[] = [];
     let attempts = 0;
     let failedCommand: string | undefined;
@@ -719,9 +921,15 @@ export async function buildProgram(
     let failureOutput = "";
     let verified = false;
     let lastSummary: AgentSummary | undefined;
+    let previousVerificationSignature: string | undefined;
 
     await writeWorkstreamStatus(manifestPath, workstream.id, "in_progress");
-    await emit("workstream-start", { id: workstream.id, name: workstream.name });
+    await emit("workstream-start", {
+      id: workstream.id,
+      name: workstream.name,
+      logPath: workstreamLog,
+      executionFit,
+    });
     if (treeGuardAvailable && originalBaselines[workstream.id] === undefined) {
       const original = await signTree();
       if (original !== undefined) {
@@ -751,6 +959,9 @@ export async function buildProgram(
       const maxAttempts = 1 + config.build.maxRecoveryAttempts;
       while (attempts < maxAttempts && !verified) {
         attempts += 1;
+        const attemptAgent =
+          attempts === 1 ? agent : (recovery?.agent ?? agent);
+        const attemptAgentLabel = describeAgent(attemptAgent);
         const prompt =
           attempts === 1
             ? workstreamPrompt(workstream, verifyCommands)
@@ -763,11 +974,12 @@ export async function buildProgram(
         const baseline = treeGuardAvailable ? await signTree() : undefined;
 
         logStream.write(
-          `=== attempt ${attempts} (${now().toISOString()}) ===\n--- prompt ---\n${prompt}\n--- agent output ---\n`,
+          `=== attempt ${attempts} (${now().toISOString()}) ===\n--- agent ---\n${attemptAgentLabel}\n--- prompt ---\n${prompt}\n--- agent output ---\n`,
         );
         await emit("agent-start", {
           id: workstream.id,
           attempt: attempts,
+          agent: attemptAgentLabel,
           promptBytes: Buffer.byteLength(prompt, "utf8"),
         });
         const attemptStartMs = now().getTime();
@@ -775,10 +987,10 @@ export async function buildProgram(
         let agentResult: CommandResult;
         try {
           agentResult = await agentRunner({
-            command: agent.command,
-            args: agent.args,
+            command: attemptAgent.command,
+            args: attemptAgent.args,
             prompt,
-            promptMode: agent.promptMode,
+            promptMode: attemptAgent.promptMode,
             cwd: root,
             onOutput: (chunk) => logStream.write(chunk),
           });
@@ -794,11 +1006,13 @@ export async function buildProgram(
             status: "failed",
             attempts,
             agentExitCodes,
+            logPath: workstreamLog,
+            executionFit,
           });
           return {
             programId: options.programId,
             result: "FAILED",
-            reason: `Agent command failed to start for ${workstream.id}: ${message}`,
+          reason: `Agent command ${attemptAgentLabel} failed to start for ${workstream.id}: ${message}`,
             ...agentField,
             plan,
             outcomes,
@@ -810,6 +1024,7 @@ export async function buildProgram(
         await emit("agent-exit", {
           id: workstream.id,
           attempt: attempts,
+          agent: attemptAgentLabel,
           exitCode: agentResult.exitCode,
           ...(agentResult.inputError
             ? { inputError: agentResult.inputError }
@@ -838,12 +1053,61 @@ export async function buildProgram(
           failedCommand = undefined;
           failureReason = `The prompt could not be delivered to the agent's stdin (${agentResult.inputError}); the agent likely ran without instructions.`;
           failureOutput = agentResult.output;
+          previousVerificationSignature = undefined;
           logStream.write(
             `=== prompt delivery failed: ${agentResult.inputError} ===\n`,
           );
           progress(
             `${workstream.id} prompt delivery failed (${agentResult.inputError})`,
           );
+          continue;
+        }
+
+        const outputSignal = classifyAgentOutput(agentResult.output);
+        if (outputSignal?.kind === "terminal") {
+          const canSwitchToRecovery =
+            attempts === 1 && distinctRecovery !== undefined && attempts < maxAttempts;
+          verified = false;
+          failedCommand = undefined;
+          failureReason = canSwitchToRecovery
+            ? `The primary agent could not complete the workstream because ${outputSignal.reason}; continue with the configured recovery agent.`
+            : `Agent environment failure or capacity failure: ${outputSignal.reason}; retrying the same invocation cannot complete this workstream.`;
+          failureOutput = agentResult.output;
+          await emit("agent-terminal-signal", {
+            id: workstream.id,
+            attempt: attempts,
+            agent: attemptAgentLabel,
+            reason: outputSignal.reason,
+          });
+          logStream.write(
+            `=== terminal agent signal: ${outputSignal.reason} ===\n`,
+          );
+          if (canSwitchToRecovery) {
+            progress(
+              `${workstream.id} primary agent stopped: ${outputSignal.reason}; switching to recovery agent ${recoveryLabel}`,
+            );
+            continue;
+          }
+          progress(
+            `${workstream.id} agent stopped: ${outputSignal.reason}; build stopped`,
+          );
+          break;
+        }
+        if (outputSignal?.kind === "unverified") {
+          verified = false;
+          failedCommand = undefined;
+          failureReason = `${outputSignal.reason}; independent verification was not run.`;
+          failureOutput = agentResult.output;
+          previousVerificationSignature = undefined;
+          await emit("agent-unverified", {
+            id: workstream.id,
+            attempt: attempts,
+            reason: outputSignal.reason,
+          });
+          logStream.write(
+            `=== agent explicitly unverified: ${outputSignal.reason} ===\n`,
+          );
+          progress(`${workstream.id} agent outcome: unverified; recovering`);
           continue;
         }
 
@@ -874,6 +1138,8 @@ export async function buildProgram(
               status: "failed",
               attempts,
               agentExitCodes,
+              logPath: workstreamLog,
+              executionFit,
               ...(lastSummary === undefined ? {} : { summary: lastSummary.text }),
             });
             await emit("build-failed", { id: workstream.id });
@@ -891,6 +1157,7 @@ export async function buildProgram(
           failedCommand = undefined;
           failureReason = `The agent process exited with code ${agentResult.exitCode} before completing the workstream.`;
           failureOutput = agentResult.output;
+          previousVerificationSignature = undefined;
           logStream.write(
             `=== agent exited with code ${agentResult.exitCode} ===\n`,
           );
@@ -926,6 +1193,7 @@ export async function buildProgram(
               failureReason =
                 "The agent exited successfully but made no changes to the working tree, and no prior attempt changed it either; the workstream was not implemented.";
               failureOutput = agentResult.output;
+              previousVerificationSignature = undefined;
               await emit("no-op", {
                 id: workstream.id,
                 attempt: attempts,
@@ -947,6 +1215,7 @@ export async function buildProgram(
           failedCommand = undefined;
           failureReason = `The spec declares (NEW) files that do not exist after the attempt: ${missingNew.join(", ")}.`;
           failureOutput = agentResult.output;
+          previousVerificationSignature = undefined;
           await emit("no-op", {
             id: workstream.id,
             attempt: attempts,
@@ -1005,24 +1274,57 @@ export async function buildProgram(
               output: verifyResult.output,
             });
             logStream.write(
-              `=== verification failed: ${command} ===\n${tail(verifyResult.output)}\n`,
+              `=== verification failed: ${command} ===\n${verifyResult.output}\n`,
             );
-            progress(`${workstream.id} verify ${name}: FAILED (${command})`);
+            const diagnostic = diagnosticLine(verifyResult.output);
+            progress(
+              `${workstream.id} verify ${name}: FAILED (${command})${
+                diagnostic === undefined ? "" : ` — ${diagnostic}`
+              }`,
+            );
           } else {
             progress(`${workstream.id} verify ${name}: ok`);
           }
         }
         if (verificationFailures.length > 0) {
           failedCommand = verificationFailures[0]?.command;
+          const firstDiagnostic = verificationFailures
+            .map(({ output }) => diagnosticLine(output))
+            .find((line) => line !== undefined);
           failureReason = `It failed independent verification; the failing commands were:\n${verificationFailures
             .map(({ command }) => `  - ${command}`)
-            .join("\n")}`;
+            .join("\n")}${
+            firstDiagnostic === undefined
+              ? ""
+              : `\nFirst diagnostic: ${firstDiagnostic}`
+          }`;
           failureOutput = verificationFailures
             .map(
               ({ command, output }) =>
                 `=== ${command} ===\n${tail(output)}`,
             )
             .join("\n\n");
+          const signature = verificationSignature(verificationFailures);
+          if (signature === previousVerificationSignature) {
+            const diagnostic = diagnosticLine(failureOutput);
+            failureReason = `Independent verification failed identically on two consecutive attempts; further blind recovery was stopped.${
+              diagnostic === undefined ? "" : ` First diagnostic: ${diagnostic}`
+            }`;
+            await emit("recovery-circuit-break", {
+              id: workstream.id,
+              attempt: attempts,
+              signature,
+              commands: verificationFailures.map(({ command }) => command),
+            });
+            logStream.write(
+              "=== recovery circuit break: identical verification failure ===\n",
+            );
+            progress(
+              `${workstream.id} recovery stopped: verification failed identically twice`,
+            );
+            break;
+          }
+          previousVerificationSignature = signature;
         }
       }
     } finally {
@@ -1118,6 +1420,8 @@ export async function buildProgram(
         status: "complete",
         attempts,
         agentExitCodes,
+        logPath: workstreamLog,
+        executionFit,
         ...(commitSha === undefined ? {} : { commit: commitSha }),
         ...(lastSummary === undefined ? {} : { summary: lastSummary.text }),
       });
@@ -1135,6 +1439,8 @@ export async function buildProgram(
         status: "failed",
         attempts,
         agentExitCodes,
+        logPath: workstreamLog,
+        executionFit,
         ...(failedCommand === undefined ? {} : { failedCommand }),
         ...(lastSummary === undefined ? {} : { summary: lastSummary.text }),
       });
@@ -1142,10 +1448,15 @@ export async function buildProgram(
       progress(
         `${workstream.id} FAILED after ${attempts} attempt(s) in ${minutesSince(workstreamStartMs)}; build stopped`,
       );
+      const finalDiagnostic = diagnosticLine(failureOutput);
       return {
         programId: options.programId,
         result: "FAILED",
-        reason: `Workstream ${workstream.id} failed after ${attempts} attempt(s); see ${workstreamLog}.`,
+        reason: `Workstream ${workstream.id} failed after ${attempts} attempt(s). ${failureReason || "The workstream did not pass independent verification."}${
+          finalDiagnostic === undefined || failureReason.includes(finalDiagnostic)
+            ? ""
+            : ` Diagnostic: ${finalDiagnostic}`
+        } See ${workstreamLog}.`,
         ...agentField,
         plan,
         outcomes,

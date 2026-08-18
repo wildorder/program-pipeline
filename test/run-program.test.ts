@@ -25,6 +25,9 @@ function spec(workstreamId: string): string {
 ## Traceability
 - SC-01
 
+## Checkpoint Safety
+The repository remains green without work from a later workstream.
+
 ## Files Touched
 - \`src/example.ts\` (NEW)
 
@@ -357,5 +360,73 @@ describe("runProgram", () => {
     expect(result.result).toBe("FAILED");
     expect(result.reason).toContain("No stages to run");
     expect(result.stages).toEqual([]);
+  });
+
+  it("automatically refreshes missing semantic convergence before --from build", async () => {
+    const root = await fixture({ git: false });
+    const prompts: string[] = [];
+    const progress: string[] = [];
+
+    const result = await runProgram({
+      cwd: root,
+      programId: "alpha",
+      from: "build",
+      to: "build",
+      commit: false,
+      agentRunner: async (invocation) => {
+        prompts.push(invocation.prompt);
+        if (invocation.prompt.includes('"checkpointAssessments"')) {
+          return {
+            exitCode: 0,
+            output: `\`\`\`json
+{"checkpointAssessments":[{"workstreamId":"WS-01","status":"safe","reason":"All configured verification remains green after WS-01 alone."}],"findings":[]}
+\`\`\``,
+          };
+        }
+        return { exitCode: 0, output: "implemented" };
+      },
+      verifyRunner: async () => ({ exitCode: 0, output: "ok" }),
+      onProgress: (line) => progress.push(line),
+    });
+
+    expect(result.result).toBe("COMPLETE");
+    expect(result.stages.map(({ stage }) => stage)).toEqual([
+      "validate",
+      "converge",
+      "build",
+    ]);
+    expect(progress.join("\n")).toContain("automatically running validate and converge");
+    expect(prompts).toHaveLength(2);
+  });
+
+  it("halts --from build before implementation when the refreshed checkpoint is unsafe", async () => {
+    const root = await fixture({ git: false });
+    let agentCalls = 0;
+
+    const result = await runProgram({
+      cwd: root,
+      programId: "alpha",
+      from: "build",
+      to: "build",
+      commit: false,
+      agentRunner: async () => {
+        agentCalls += 1;
+        return {
+          exitCode: 0,
+          output: `\`\`\`json
+{"checkpointAssessments":[{"workstreamId":"WS-01","status":"unsafe","reason":"WS-01 deletes a contract while unmigrated consumers remain."}],"findings":[]}
+\`\`\``,
+        };
+      },
+      verifyRunner: async () => ({ exitCode: 0, output: "must not run" }),
+    });
+
+    expect(result.result).toBe("FAILED");
+    expect(result.reason).toContain("needs replanning");
+    expect(result.stages.map(({ stage }) => stage)).toEqual([
+      "validate",
+      "converge",
+    ]);
+    expect(agentCalls).toBe(1);
   });
 });

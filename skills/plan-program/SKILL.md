@@ -159,6 +159,33 @@ workstream:
   neighbors might reasonably assume it handles something, say that it does
   not.
 
+### Every workstream is an independently green checkpoint
+
+Design the roster so that, starting from a green repository containing only
+its declared dependencies, each workstream can finish with every configured
+build, typecheck, test, and lint command still green. A later workstream must
+never be required to repair an earlier checkpoint.
+
+For a shared contract migration, prefer an explicit sequence:
+
+1. **Expand** — introduce the new contract while preserving compatibility.
+2. **Migrate** — move bounded consumer groups in independently green batches.
+3. **Contract/delete** — remove the compatibility surface only after every
+   consumer migration is complete.
+
+The destructive cleanup depends on every migration workstream. Do not place
+foundational deletion first merely because it is conceptually central.
+
+Execution size is a separate concern from checkpoint safety. Read
+`build.executionProfile` from `pipeline.config.json` when present. Treat its
+target, caution, and hard working-set values as broad risk bands, not precise
+pass/fail numbers: a small estimated overage is noise and must not trigger a
+split. Reconsider a workstream that is grossly above the hard band, but allow
+a cohesive workstream to proceed with a clear justification. Only a minimum
+static input that physically cannot fit the configured context window is an
+automatic sizing failure. The author command performs the deterministic
+estimate after specifications name concrete files.
+
 ## 5. Hand off for review
 
 Both files now exist on disk. Reply with a short summary only — program
@@ -181,8 +208,9 @@ the command exists to prevent.
 ## Rules
 
 - Describe only new behavior. Reference `docs/as-built.md` for unchanged capabilities.
-- Keep each workstream completable in one agent session, roughly 200–300 turns.
-- Split a workstream that touches more than eight core files.
+- Keep each workstream completable in one agent session and independently
+  green; use causal boundaries and the configured execution bands instead of
+  hard line-count or file-count rules.
 - List every package or directory each workstream touches.
 - Use stable `SC-xx` success-criteria IDs for downstream traceability.
 - Give every workstream a `scope` with a specific `summary`, and state

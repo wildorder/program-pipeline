@@ -45,6 +45,9 @@ const validSpec = `# WS-01: Core
 ## Dependencies
 None.
 
+## Checkpoint Safety
+The repository remains green after this workstream without later repairs.
+
 ## Files Touched
 - (NEW) \`src/core.ts\`
 
@@ -153,6 +156,62 @@ Prose mentioning \`src/other.ts\` is also fine.`,
 
     expect(report.findings).toEqual([]);
     expect(report.result).toBe("PASSED");
+  });
+
+  it("accepts explicit file deletion annotations", async () => {
+    const root = await fixture(
+      manifest([
+        {
+          id: "WS-01",
+          name: "Core",
+          taskFile: "tasks/alpha/ws-01.md",
+          status: "not_started",
+          dependencies: [],
+          packages: ["app"],
+        },
+      ]),
+      {
+        "tasks/alpha/ws-01.md": validSpec.replace(
+          "(NEW) `src/core.ts`",
+          "(DELETE) `src/core.ts`",
+        ),
+      },
+    );
+
+    await expect(validateWorkstreams(root, "alpha")).resolves.toMatchObject({
+      result: "PASSED",
+      findings: [],
+    });
+  });
+
+  it("blocks a spec that does not explain checkpoint safety", async () => {
+    const root = await fixture(
+      manifest([
+        {
+          id: "WS-01",
+          name: "Core",
+          taskFile: "tasks/alpha/ws-01.md",
+          status: "not_started",
+          dependencies: [],
+          packages: ["app"],
+        },
+      ]),
+      {
+        "tasks/alpha/ws-01.md": validSpec.replace(
+          /## Checkpoint Safety\n[\s\S]*?\n\n## Files Touched/u,
+          "## Files Touched",
+        ),
+      },
+    );
+
+    const report = await validateWorkstreams(root, "alpha");
+
+    expect(report.result).toBe("FAILED");
+    expect(report.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "checkpoint-safety-missing" }),
+      ]),
+    );
   });
 
   it("rejects task paths outside the project root", async () => {

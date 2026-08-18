@@ -357,6 +357,7 @@ Each author returns a declaration alongside its summary:
 | `dependencies` | every workstream this spec consumes output from | merged into the manifest |
 | `needs` | a dependency whose spec it did not have | re-authored with that spec in hand |
 | `unmet` | a requirement no workstream provides | a coverage gap: back to planning |
+| `replan` | a non-atomic scope or unsafe checkpoint sequence | stop before later levels and return to planning |
 
 **Discovered edges are reconciled, not raised as findings.** A finding is a
 problem someone must resolve; a discovered dependency is not a problem. If a
@@ -376,6 +377,10 @@ Exactly two outcomes still stop for a human, and neither is about an edge:
 - **An unmet requirement.** Work the program needs that no workstream
   provides is missing scope, which is a planning decision. The run ends
   `REQUIRES_REPLAN`; valid edges are still merged first.
+- **An unsafe checkpoint.** A workstream that needs future work to restore a
+  green repository, such as deleting a shared contract before its consumers
+  migrate, is structurally misplanned. Shared migrations use
+  expand → migrate consumers → contract/delete ordering.
 
 Everything else settles on its own. A workstream that named `needs` is
 re-authored with that spec in hand, levels are recomputed, and the loop
@@ -404,6 +409,14 @@ fan-in, not a deep chain, is what makes a brief large. A demoted dependency
 is still visible in the roster, so the author can ask for it back through
 `needs`.
 
+After concrete files exist, authoring measures each workstream's approximate
+working set from the spec, repository instructions, configured context, and
+declared files. The default 250k-class profile uses broad 100k target, 140k
+caution, and 190k hard bands with a 10k tolerance and 25% byte-estimate
+uncertainty. Caution and oversized results are advisory; a small overage never
+forces a split. Only a lower-bound estimate that physically exceeds the
+configured context window returns `REQUIRES_REPLAN` automatically.
+
 A level that does not fully succeed stops the run: later levels read the
 specs it was supposed to produce. Specs that already exist are skipped unless
 `--force` is passed, so a failed run resumes without redoing work.
@@ -414,9 +427,10 @@ Execute a program's workstreams in dependency order with the configured agent.
 The runner verifies every workstream itself by running the `verify` commands
 from `pipeline.config.json`, writes workstream status back to the manifest
 (`in_progress`, `complete`, `failed`), commits each verified workstream,
-resumes by skipping workstreams already marked `complete`, and appends
-structured JSON events to
-`build-logs/{program-id}-build-{timestamp}.jsonl`.
+resumes by skipping workstreams already marked `complete`, and writes
+per-run structured events and workstream logs to
+`build-logs/{program-id}-build-{timestamp}-{run-id}.jsonl` and
+`build-logs/{program-id}-build-{timestamp}-{run-id}-{workstream}.log`.
 
 ```sh
 npx --yes @wildorder/program-pipeline build phase-1 --cwd . --dry-run
@@ -430,19 +444,47 @@ Configure the runner in `pipeline.config.json`:
 ```json
 {
   "agent": { "command": "claude", "args": ["-p", "--model", "sonnet"], "promptMode": "stdin" },
+  "recoveryAgent": { "command": "codex", "args": ["exec", "--model", "gpt-5.4"], "promptMode": "stdin" },
   "authorAgent": { "command": "claude", "args": ["-p", "--model", "opus"], "promptMode": "stdin" },
   "validatorAgent": { "command": "codex", "args": ["exec"] },
   "models": { "author": "claude-code/opus", "validator": "gpt-sol" },
   "verify": { "build": "npm run build", "test": "npm test" },
-  "build": { "maxRecoveryAttempts": 1, "verifyRetries": 1, "logDir": "build-logs", "commit": true, "critiqueTests": false },
+  "build": {
+    "maxRecoveryAttempts": 1,
+    "verifyRetries": 0,
+    "logDir": "build-logs",
+    "commit": true,
+    "critiqueTests": false,
+    "executionProfile": {
+      "contextWindowTokens": 250000,
+      "targetWorkingSetTokens": 100000,
+      "cautionWorkingSetTokens": 140000,
+      "hardWorkingSetTokens": 190000,
+      "toleranceTokens": 10000,
+      "byteEstimateUncertainty": 0.25
+    }
+  },
   "validate": { "rounds": 2, "strict": false, "scopeDownAfterRound": 2 }
 }
 ```
 
-`build.maxRecoveryAttempts` bounds recovery agents per workstream, and
-`build.verifyRetries` (default 1) re-runs a failed verify command before the
-failure counts against the attempt — absorbing flaky tests instead of
-spending a recovery agent on them. The runner also fingerprints the working
+`build.maxRecoveryAttempts` bounds recovery agents per workstream.
+When `recoveryAgent` is configured, the first attempt uses `agent` and every
+recovery attempt uses that fallback invocation. A distinct provider or model
+also lets the runner recover from a primary token, context, quota, or session
+failure; without a distinct fallback, those failures stop immediately instead
+of replaying an invocation that cannot succeed. Generated GitHub workflows
+install CLIs referenced only by `recoveryAgent` as well.
+The execution profile is deliberately tolerant: target, caution, and hard are
+risk bands rather than cliffs. The deterministic estimate is recorded in each
+workstream outcome. Only physical impossibility blocks execution; caution and
+oversized estimates proceed with visible diagnostics.
+`build.verifyRetries` defaults to `0`; set it explicitly to re-run a failed
+verify command before the failure counts against the attempt when a project
+has known flaky checks. The runner stops recovery when the same independent
+verification failure repeats unchanged, and it treats an agent's explicit
+unverified result or provider capacity failure as a failure even when the
+agent CLI exits zero. The runner also fingerprints the working
 tree before each workstream's first attempt (persisted to
 `build-logs/{program-id}-baselines.json`): an agent that changes nothing on
 an untouched workstream is failed as a no-op, but once earlier attempts have
@@ -547,13 +589,20 @@ dependency graph to choose what to re-check, but finding *undeclared*
 dependencies is part of the job — a workstream that silently consumes
 another's output is not in the producer's neighbor set.
 
-The loop ends as **converged** (a round produced no new blocker or major
-findings), **cap-reached** (the round cap ran out, a normal outcome given how
-subjective majors are), **requires-replan** (a structural defect no spec edit
-can fix — the loop stops immediately rather than polishing a workstream that
-should be split), or **aborted**. How the loop stopped and whether the gate
-passed are decided separately: the gate comes from the deterministic
-validator over the final tree.
+Every critic reply must contain one checkpoint assessment per in-scope
+workstream, simulating repository state immediately after that workstream and
+its declared dependencies—never the final program state. Missing assessments
+fail closed; an unsafe assessment is a blocker requiring replanning.
+
+The loop ends as **converged** (a clean round with complete safe checkpoint
+coverage), **cap-reached** (the round cap ran out without a clean confirming
+round), **requires-replan** (a structural defect no spec edit can fix), or
+**aborted**. Only `converged` can pass. A passing run writes
+`docs/programs/{program-id}-convergence.json`, hashed over the exact program,
+status-normalized manifest, specs, vision, AGENTS instructions, context docs,
+and semantic configuration. Direct `build` refuses a missing or stale receipt;
+`run --from build` automatically inserts deterministic validation and
+convergence before invoking an implementation agent.
 
 Findings the writer declined and the critic then re-raised are reported as
 **open disagreements** for a human to settle, rather than resolved by whoever

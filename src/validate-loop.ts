@@ -13,6 +13,7 @@ import {
   summaryLine,
   type AgentSummary,
 } from "./agent-summary.js";
+import { writeConvergenceReceipt } from "./convergence-receipt.js";
 import {
   FINDING_CATEGORIES,
   fingerprint,
@@ -99,6 +100,8 @@ export interface ValidateLoopResult {
   findings: IdentifiedFinding[];
   openDisagreements: Disagreement[];
   replanFindings: IdentifiedFinding[];
+  /** Written only after the complete semantic and mechanical gate passes. */
+  convergenceReceipt?: string;
 }
 
 export interface ValidateLoopOptions {
@@ -206,16 +209,40 @@ export interface CriticReply {
    */
   found: boolean;
   findings: Finding[];
+  checkpointAssessments: CheckpointAssessment[];
+  missingAssessments: string[];
+}
+
+export interface CheckpointAssessment {
+  workstreamId: string;
+  status: "safe" | "unsafe";
+  reason: string;
 }
 
 /** Parse a critic reply, discarding anything that does not fit the contract. */
-export function parseCriticReply(output: string): CriticReply {
+export function parseCriticReply(
+  output: string,
+  expectedWorkstreamIds: readonly string[] = [],
+): CriticReply {
   const parsed = extractJson(output, (value) => hasArrayKey(value, "findings"));
   if (typeof parsed !== "object" || parsed === null) {
-    return { found: false, findings: [] };
+    return {
+      found: false,
+      findings: [],
+      checkpointAssessments: [],
+      missingAssessments: [...expectedWorkstreamIds],
+    };
   }
-  const raw = (parsed as { findings?: unknown }).findings;
-  if (!Array.isArray(raw)) return { found: false, findings: [] };
+  const parsedRecord = parsed as Record<string, unknown>;
+  const raw = parsedRecord.findings;
+  if (!Array.isArray(raw)) {
+    return {
+      found: false,
+      findings: [],
+      checkpointAssessments: [],
+      missingAssessments: [...expectedWorkstreamIds],
+    };
+  }
   const findings: Finding[] = [];
   for (const item of raw) {
     if (typeof item !== "object" || item === null) continue;
@@ -239,7 +266,34 @@ export function parseCriticReply(output: string): CriticReply {
       ...(record.requiresReplan === true ? { requiresReplan: true } : {}),
     });
   }
-  return { found: true, findings };
+  const assessmentById = new Map<string, CheckpointAssessment>();
+  if (Array.isArray(parsedRecord.checkpointAssessments)) {
+    for (const item of parsedRecord.checkpointAssessments) {
+      if (typeof item !== "object" || item === null) continue;
+      const record = item as Record<string, unknown>;
+      if (
+        typeof record.workstreamId !== "string" ||
+        (record.status !== "safe" && record.status !== "unsafe") ||
+        typeof record.reason !== "string" ||
+        record.reason.trim() === ""
+      ) {
+        continue;
+      }
+      assessmentById.set(record.workstreamId, {
+        workstreamId: record.workstreamId,
+        status: record.status,
+        reason: record.reason.trim(),
+      });
+    }
+  }
+  return {
+    found: true,
+    findings,
+    checkpointAssessments: [...assessmentById.values()],
+    missingAssessments: expectedWorkstreamIds.filter(
+      (id) => !assessmentById.has(id),
+    ),
+  };
 }
 
 /** Findings only, for callers that treat an unparseable reply as empty. */
@@ -387,6 +441,7 @@ export async function validateLoop(
   const allSpecPaths = workstreams.map(({ taskFile }) => taskFile);
 
   const seen = new Map<string, IdentifiedFinding>();
+  const unresolved = new Map<string, IdentifiedFinding>();
   const disagreements = new Map<string, Disagreement>();
   const rounds: RoundRecord[] = [];
   let changedWorkstreams: string[] = [];
@@ -425,6 +480,9 @@ export async function validateLoop(
       round,
       totalRounds,
       scoped: mayScope,
+      expectedWorkstreamIds: mayScope
+        ? scopedIds
+        : workstreams.map(({ id }) => id),
       openDisagreements: [...disagreements.values()].map(
         ({ finding, reason: declined }) => ({ finding, reason: declined }),
       ),
@@ -458,7 +516,10 @@ export async function validateLoop(
     // A reply with no parseable findings block is a protocol failure, not a
     // clean review. Reporting it as "no findings" would converge the loop and
     // return PASSED on a critique that never arrived — the gate failing open.
-    const criticReply = parseCriticReply(criticResult.output);
+    const criticReply = parseCriticReply(
+      criticResult.output,
+      context.expectedWorkstreamIds,
+    );
     if (!criticReply.found) {
       return aborted(
         options.programId,
@@ -467,7 +528,36 @@ export async function validateLoop(
       );
     }
 
-    const raised = applySeverityPolicy(criticReply.findings).map(identify);
+    if (criticReply.missingAssessments.length > 0) {
+      return aborted(
+        options.programId,
+        `Critic agent (${critic.label}) omitted checkpoint assessments for: ${criticReply.missingAssessments.join(", ")}. Every in-scope workstream must be judged from the repository state immediately after that workstream alone; a partial assessment cannot pass.`,
+        { rounds, strict, findings: [...seen.values()] },
+      );
+    }
+
+    const unsafeCheckpointFindings: Finding[] =
+      criticReply.checkpointAssessments
+        .filter(({ status }) => status === "unsafe")
+        .map(({ workstreamId, reason: assessmentReason }) => ({
+          severity: "blocker",
+          category: "scope-structure",
+          subject: `${workstreamId} checkpoint safety`,
+          message: assessmentReason,
+          evidence: [
+            {
+              kind: "concern",
+              named: "workstream is not an independently green checkpoint",
+              detail: assessmentReason,
+            },
+          ],
+          workstreamId,
+          requiresReplan: true,
+        }));
+    const raised = applySeverityPolicy([
+      ...criticReply.findings,
+      ...unsafeCheckpointFindings,
+    ]).map(identify);
 
     const replan = raised.filter((finding) => finding.requiresReplan === true);
     const fresh = raised.filter(
@@ -475,6 +565,14 @@ export async function validateLoop(
     );
     for (const finding of raised) {
       if (!seen.has(finding.id)) seen.set(finding.id, finding);
+      if (haltsConvergence(finding)) unresolved.set(finding.id, finding);
+    }
+
+    const raisedIds = new Set(raised.map(({ id }) => id));
+    for (const id of disagreements.keys()) {
+      if (!raisedIds.has(id)) {
+        unresolved.delete(id);
+      }
     }
 
     // A finding the writer declined and the critic then re-raised is a real
@@ -516,9 +614,16 @@ export async function validateLoop(
         rejected: 0,
         criticSummary: criticSummary.text,
       });
-      outcome = "converged";
-      reason = `Round ${round} produced no new blocker or major findings.`;
-      progress(`round ${round}: converged`);
+      const stillRaised = raised.filter(haltsConvergence);
+      if (stillRaised.length > 0) {
+        outcome = "cap-reached";
+        reason = `Round ${round} re-raised ${stillRaised.length} unresolved blocker/major finding(s); unchanged findings cannot be treated as convergence.`;
+        progress(`round ${round}: unresolved findings remain`);
+      } else {
+        outcome = "converged";
+        reason = `Round ${round} produced no unresolved blocker or major findings.`;
+        progress(`round ${round}: converged`);
+      }
       break;
     }
 
@@ -564,7 +669,10 @@ export async function validateLoop(
     }
     // Applied findings are resolved; a later round re-raising one turns it
     // back into an open item through the normal `fresh` path.
-    for (const id of verdict.applied) disagreements.delete(id);
+    for (const id of verdict.applied) {
+      disagreements.delete(id);
+      unresolved.delete(id);
+    }
 
     changedWorkstreams = [
       ...new Set(
@@ -592,13 +700,13 @@ export async function validateLoop(
   }
 
   if (outcome === "cap-reached") {
-    reason = `Round cap (${totalRounds}) reached with findings still open.`;
+    reason ??= `Round cap (${totalRounds}) reached before a clean critic round confirmed the fixes.`;
   }
 
-  // The gate is decided by the deterministic validator over the final tree,
-  // not by the loop's stopping condition — a loop that converged still fails
-  // if a blocker survived it, and a loop that hit its cap still passes if
-  // everything left open is advisory.
+  // Mechanical validation and semantic convergence are both gates. A round
+  // cap is not success: fixes made by the last writer have not received a
+  // clean independent review, and an unchanged blocker/major is unresolved,
+  // not evidence that the loop converged.
   const mechanical = await validateWorkstreams(root, options.programId, strict);
   const modelFindings = [...seen.values()];
   const combined = dedupe([
@@ -606,7 +714,30 @@ export async function validateLoop(
     ...modelFindings,
   ]);
   const gateFailed =
-    mechanical.result === "FAILED" || outcome === "requires-replan";
+    mechanical.result === "FAILED" ||
+    outcome !== "converged" ||
+    unresolved.size > 0;
+
+  let convergenceReceipt: string | undefined;
+  if (!gateFailed) {
+    try {
+      const receipt = await writeConvergenceReceipt(
+        root,
+        options.programId,
+        config,
+      );
+      convergenceReceipt = receipt.inputHash;
+      progress(`convergence receipt: ${receipt.inputHash.slice(0, 12)}`);
+    } catch (error) {
+      return aborted(
+        options.programId,
+        `Convergence passed but its receipt could not be written: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { rounds, strict, findings: combined },
+      );
+    }
+  }
 
   return {
     programId: options.programId,
@@ -619,6 +750,7 @@ export async function validateLoop(
     findings: sortBySeverity(combined) as IdentifiedFinding[],
     openDisagreements: [...disagreements.values()],
     replanFindings,
+    ...(convergenceReceipt === undefined ? {} : { convergenceReceipt }),
   };
 }
 

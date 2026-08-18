@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
+import { DEFAULT_EXECUTION_FIT_POLICY } from "./execution-fit.js";
 
 export const PIPELINE_CONFIG_FILE = "pipeline.config.json";
 
@@ -19,6 +20,49 @@ const agentSchema = z.object({
   promptMode: z.enum(["stdin", "argument"]).default("stdin"),
 });
 
+const executionFitSchema = z
+  .object({
+    contextWindowTokens: z.number().int().positive().default(
+      DEFAULT_EXECUTION_FIT_POLICY.contextWindowTokens,
+    ),
+    targetWorkingSetTokens: z.number().int().positive().default(
+      DEFAULT_EXECUTION_FIT_POLICY.targetWorkingSetTokens,
+    ),
+    cautionWorkingSetTokens: z.number().int().positive().default(
+      DEFAULT_EXECUTION_FIT_POLICY.cautionWorkingSetTokens,
+    ),
+    hardWorkingSetTokens: z.number().int().positive().default(
+      DEFAULT_EXECUTION_FIT_POLICY.hardWorkingSetTokens,
+    ),
+    toleranceTokens: z.number().int().min(0).default(
+      DEFAULT_EXECUTION_FIT_POLICY.toleranceTokens,
+    ),
+    bytesPerToken: z.number().positive().default(
+      DEFAULT_EXECUTION_FIT_POLICY.bytesPerToken,
+    ),
+    byteEstimateUncertainty: z.number().min(0).lt(1).default(
+      DEFAULT_EXECUTION_FIT_POLICY.byteEstimateUncertainty,
+    ),
+    missingNewFileTokens: z.number().int().min(0).default(
+      DEFAULT_EXECUTION_FIT_POLICY.missingNewFileTokens,
+    ),
+  })
+  .refine(
+    ({
+      targetWorkingSetTokens,
+      cautionWorkingSetTokens,
+      hardWorkingSetTokens,
+      contextWindowTokens,
+    }) =>
+      targetWorkingSetTokens < cautionWorkingSetTokens &&
+      cautionWorkingSetTokens < hardWorkingSetTokens &&
+      hardWorkingSetTokens <= contextWindowTokens,
+    {
+      message:
+        "thresholds must satisfy targetWorkingSetTokens < cautionWorkingSetTokens < hardWorkingSetTokens <= contextWindowTokens",
+    },
+  );
+
 export const pipelineConfigSchema = z.object({
   schemaVersion: z.literal(1),
   pipelineVersion: z
@@ -31,6 +75,12 @@ export const pipelineConfigSchema = z.object({
   requireApprovalBeforeBuild: z.boolean(),
   /** Implements workstreams. A cheaper model is often the right call here. */
   agent: agentSchema.optional(),
+  /**
+   * Handles build recovery attempts. When absent, recovery reuses `agent`;
+   * configure a different provider or model to escape capacity and context
+   * failures in the primary invocation.
+   */
+  recoveryAgent: agentSchema.optional(),
   /**
    * Reasons about specs in the convergence loop. Distinct from `agent`:
    * implementing a spec and judging one want different models, and borrowing
@@ -46,7 +96,7 @@ export const pipelineConfigSchema = z.object({
   build: z
     .object({
       maxRecoveryAttempts: z.number().int().min(0).default(1),
-      verifyRetries: z.number().int().min(0).default(1),
+      verifyRetries: z.number().int().min(0).default(0),
       logDir: z.string().min(1).default("build-logs"),
       commit: z.boolean().default(true),
       /** Critique the workstream diff's tests before the runner commits. */
@@ -57,14 +107,16 @@ export const pipelineConfigSchema = z.object({
        * block every existing project's next build; new projects opt in.
        */
       requireCriteriaApproval: z.boolean().default(false),
+      executionProfile: executionFitSchema.default(DEFAULT_EXECUTION_FIT_POLICY),
     })
     .default({
       maxRecoveryAttempts: 1,
-      verifyRetries: 1,
+      verifyRetries: 0,
       logDir: "build-logs",
       commit: true,
       critiqueTests: false,
       requireCriteriaApproval: false,
+      executionProfile: DEFAULT_EXECUTION_FIT_POLICY,
     }),
   author: z
     .object({

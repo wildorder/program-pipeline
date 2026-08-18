@@ -5,11 +5,17 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildProgram,
+  classifyAgentOutput,
   sanitizedEnvironment,
   type AgentInvocation,
   type CommandResult,
 } from "../src/build-program.js";
+import {
+  convergenceReceiptPath,
+  writeConvergenceReceipt,
+} from "../src/convergence-receipt.js";
 import { reviewCriteria } from "../src/criteria.js";
+import { loadPipelineConfig } from "../src/pipeline-config.js";
 
 const temporaryRoots: string[] = [];
 
@@ -24,6 +30,9 @@ function spec(workstreamId: string): string {
 
 ## Traceability
 - SC-01
+
+## Checkpoint Safety
+The repository remains green without work from a later workstream.
 
 ## Files Touched
 - (NEW) \`src/example.ts\`
@@ -40,6 +49,7 @@ interface FixtureOptions {
   requireApproval?: boolean;
   verify?: Record<string, string>;
   agent?: Record<string, unknown>;
+  recoveryAgent?: Record<string, unknown>;
   statuses?: Record<string, string>;
   maxRecoveryAttempts?: number;
   verifyRetries?: number;
@@ -103,6 +113,9 @@ async function fixture(options: FixtureOptions = {}): Promise<string> {
         visionPath: "docs/vision.md",
         requireApprovalBeforeBuild: options.requireApproval ?? false,
         agent: options.agent ?? { command: "fake-agent", args: ["--model", "sonnet"] },
+        ...(options.recoveryAgent === undefined
+          ? {}
+          : { recoveryAgent: options.recoveryAgent }),
         validatorAgent: { command: "codex", args: ["exec", "--model", "gpt-sol"] },
         models: { author: "claude-code/opus", validator: "gpt-sol" },
         verify: options.verify ?? { test: "npm test" },
@@ -130,6 +143,11 @@ async function fixture(options: FixtureOptions = {}): Promise<string> {
       2,
     )}\n`,
     "utf8",
+  );
+  await writeConvergenceReceipt(
+    root,
+    "alpha",
+    await loadPipelineConfig(root),
   );
   return root;
 }
@@ -205,6 +223,26 @@ describe("sanitizedEnvironment", () => {
       HOME: "/home/dev",
       ANTHROPIC_MODEL: "sonnet",
     });
+  });
+});
+
+describe("classifyAgentOutput", () => {
+  it("recognizes explicit unverified and terminal provider outcomes", () => {
+    expect(classifyAgentOutput('Submission recorded (unverified)\n{"verified":false}')).toEqual({
+      kind: "unverified",
+      reason: "the agent explicitly reported that its submission was unverified",
+    });
+    expect(
+      classifyAgentOutput("Error: The model hit the maximum output token limit"),
+    ).toMatchObject({ kind: "terminal" });
+  });
+
+  it("does not classify status text echoed far from the terminal output", () => {
+    expect(
+      classifyAgentOutput(
+        `Submission recorded (unverified)${".".repeat(4_100)}\nordinary completion`,
+      ),
+    ).toBeUndefined();
   });
 });
 
@@ -304,6 +342,207 @@ describe("buildProgram", () => {
     expect(prompts[1]).toContain("1 test failed");
   });
 
+  it("uses a dedicated recovery agent after independent verification fails", async () => {
+    const root = await fixture({
+      maxRecoveryAttempts: 1,
+      recoveryAgent: {
+        command: "recovery-agent",
+        args: ["--model", "strong"],
+        promptMode: "argument",
+      },
+    });
+    const invocations: AgentInvocation[] = [];
+    let verifyCalls = 0;
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        invocations.push(invocation);
+        return pass();
+      },
+      verifyRunner: async () => {
+        verifyCalls += 1;
+        return verifyCalls === 1
+          ? { exitCode: 1, output: "compile error" }
+          : pass();
+      },
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    expect(report.recoveryAgent).toBe("recovery-agent --model strong");
+    expect(invocations.slice(0, 2).map(({ command }) => command)).toEqual([
+      "fake-agent",
+      "recovery-agent",
+    ]);
+    expect(invocations[1]).toMatchObject({ promptMode: "argument" });
+  });
+
+  it("does not verify an exit-zero submission the agent explicitly marked unverified", async () => {
+    const root = await fixture({ maxRecoveryAttempts: 1 });
+    let agentCalls = 0;
+    let verifyCalls = 0;
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        agentCalls += 1;
+        return agentCalls === 1
+          ? {
+              exitCode: 0,
+              output: 'Submission recorded (unverified)\n{"verified": false}',
+            }
+          : pass();
+      },
+      verifyRunner: async () => {
+        verifyCalls += 1;
+        return pass();
+      },
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    expect(report.outcomes[0]).toMatchObject({ attempts: 2 });
+    // WS-01 is verified only after recovery; WS-02 is verified normally.
+    expect(verifyCalls).toBe(2);
+  });
+
+  it("stops immediately when the agent reaches a hard capacity limit", async () => {
+    const root = await fixture({ maxRecoveryAttempts: 4 });
+    let agentCalls = 0;
+    let verifyCalls = 0;
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        agentCalls += 1;
+        return {
+          exitCode: 0,
+          output: "The model reached the maximum output token limit",
+        };
+      },
+      verifyRunner: async () => {
+        verifyCalls += 1;
+        return pass();
+      },
+    });
+
+    expect(report.result).toBe("FAILED");
+    expect(report.reason).toContain("token or context limit");
+    expect(agentCalls).toBe(1);
+    expect(verifyCalls).toBe(0);
+  });
+
+  it("switches to a distinct recovery agent after a primary capacity failure", async () => {
+    const root = await fixture({
+      maxRecoveryAttempts: 2,
+      recoveryAgent: {
+        command: "recovery-agent",
+        args: ["--model", "fallback"],
+      },
+    });
+    const commands: string[] = [];
+    let verifyCalls = 0;
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        commands.push(invocation.command);
+        return invocation.command === "fake-agent" && commands.length === 1
+          ? {
+              exitCode: 0,
+              output: "The model reached the maximum output token limit",
+            }
+          : pass();
+      },
+      verifyRunner: async () => {
+        verifyCalls += 1;
+        return pass();
+      },
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    expect(commands.slice(0, 2)).toEqual(["fake-agent", "recovery-agent"]);
+    expect(report.outcomes[0]).toMatchObject({ attempts: 2 });
+    expect(verifyCalls).toBe(2);
+  });
+
+  it("does not repeatedly invoke a recovery agent that also hits capacity", async () => {
+    const root = await fixture({
+      maxRecoveryAttempts: 4,
+      recoveryAgent: { command: "recovery-agent" },
+    });
+    const commands: string[] = [];
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        commands.push(invocation.command);
+        return {
+          exitCode: 0,
+          output: "The model reached the maximum output token limit",
+        };
+      },
+      verifyRunner: pass,
+    });
+
+    expect(report.result).toBe("FAILED");
+    expect(commands).toEqual(["fake-agent", "recovery-agent"]);
+    expect(report.reason).toContain("capacity failure");
+  });
+
+  it("breaks recovery when independent verification fails identically twice", async () => {
+    const root = await fixture({ maxRecoveryAttempts: 4 });
+    let agentCalls = 0;
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        agentCalls += 1;
+        return pass();
+      },
+      verifyRunner: async () => ({
+        exitCode: 1,
+        output: "src/example.ts(12,3): error TS2322: Type 'x' is not assignable",
+      }),
+    });
+
+    expect(report.result).toBe("FAILED");
+    expect(report.reason).toContain("failed identically");
+    expect(report.reason).toContain("TS2322");
+    expect(agentCalls).toBe(2);
+  });
+
+  it("runs verification once by default and reports its first diagnostic", async () => {
+    const root = await fixture({ maxRecoveryAttempts: 0 });
+    const progress: string[] = [];
+    let verifyCalls = 0;
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: pass,
+      verifyRunner: async () => {
+        verifyCalls += 1;
+        return {
+          exitCode: 1,
+          output: "src/example.ts:4: error TS1005: ';' expected",
+        };
+      },
+      onProgress: (line) => progress.push(line),
+    });
+
+    expect(report.result).toBe("FAILED");
+    expect(verifyCalls).toBe(1);
+    expect(progress.some((line) => line.includes("TS1005"))).toBe(true);
+    expect(report.reason).toContain("TS1005");
+    expect(report.outcomes[0]?.logPath).toMatch(/alpha-build-.+-WS-01\.log$/);
+  });
+
   it("reports every failing verification command to the recovery agent", async () => {
     const root = await fixture({
       maxRecoveryAttempts: 1,
@@ -377,7 +616,7 @@ describe("buildProgram", () => {
   });
 
   it("retries a failed verify command within the attempt before recovering", async () => {
-    const root = await fixture(); // default verifyRetries: 1
+    const root = await fixture({ verifyRetries: 1 });
     let verifyCalls = 0;
     const prompts: string[] = [];
 
@@ -624,6 +863,46 @@ describe("buildProgram", () => {
     expect(report.result).toBe("ABORTED");
     expect(report.reason).toContain("WS-01");
     expect(agentCalls).toBe(0);
+  });
+
+  it("refuses a direct build when semantic convergence was never recorded", async () => {
+    const root = await fixture();
+    await rm(convergenceReceiptPath(root, "alpha"));
+    let agentCalls = 0;
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        agentCalls += 1;
+        return pass();
+      },
+      verifyRunner: pass,
+    });
+
+    expect(report.result).toBe("ABORTED");
+    expect(report.reason).toContain("receipt is missing");
+    expect(report.reason).toContain("--from build");
+    expect(agentCalls).toBe(0);
+  });
+
+  it("refuses a direct build after a converged specification changes", async () => {
+    const root = await fixture();
+    await writeFile(
+      join(root, "tasks", "alpha", "ws-01.md"),
+      `${spec("WS-01")}\nChanged after convergence.\n`,
+      "utf8",
+    );
+
+    const report = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: pass,
+      verifyRunner: pass,
+    });
+
+    expect(report.result).toBe("ABORTED");
+    expect(report.reason).toContain("receipt is stale");
   });
 
   it("marks a workstream failed and stops when recovery is exhausted", async () => {

@@ -16,6 +16,10 @@ import {
   type AgentSummary,
 } from "./agent-summary.js";
 import {
+  assessRepositoryExecutionFit,
+  type ExecutionFitClassification,
+} from "./execution-fit.js";
+import {
   composeAuthorBrief,
   type AuthorTarget,
   type RosterEntry,
@@ -62,6 +66,8 @@ export interface AuthorDeclaration {
   needs: string[];
   /** Requirements no workstream in the roster provides: a coverage gap. */
   unmet: string[];
+  /** Structural reasons this scope cannot be an independently green checkpoint. */
+  replan: string[];
 }
 
 export interface AuthorWorkstreamOutcome {
@@ -76,6 +82,12 @@ export interface AuthorWorkstreamOutcome {
   demoted?: string[];
   /** Which reconciliation pass authored this; 2 or more means re-authored. */
   pass?: number;
+  executionFit?: {
+    classification: ExecutionFitClassification;
+    workingSetTokens: number;
+    lowerBoundTokens: number;
+    upperBoundTokens: number;
+  };
 }
 
 /** What one reconciliation pass merged, and what it sent back for a re-run. */
@@ -107,6 +119,8 @@ export interface AuthorProgramResult {
   cycles?: string[][];
   /** Requirements no workstream provides; set on REQUIRES_REPLAN. */
   unmet?: UnmetRequirement[];
+  /** Non-atomic scopes or unsafe migration ordering reported by authors. */
+  replan?: Array<{ workstreamId: string; reason: string }>;
   eventsPath?: string;
 }
 
@@ -186,12 +200,14 @@ export function parseDeclaration(output: string): AuthorDeclaration {
     (value) =>
       hasArrayKey(value, "dependencies") ||
       hasArrayKey(value, "needs") ||
-      hasArrayKey(value, "unmet"),
+      hasArrayKey(value, "unmet") ||
+      hasArrayKey(value, "replan"),
   );
   const empty: AuthorDeclaration = {
     dependencies: [],
     needs: [],
     unmet: [],
+    replan: [],
   };
   if (typeof parsed !== "object" || parsed === null) return empty;
   const record = parsed as Record<string, unknown>;
@@ -201,6 +217,7 @@ export function parseDeclaration(output: string): AuthorDeclaration {
     dependencies: workstreamIds(record.dependencies),
     needs: workstreamIds(record.needs),
     unmet: cleanList(record.unmet),
+    replan: cleanList(record.replan),
   };
 }
 
@@ -421,7 +438,12 @@ export async function authorWorkstreams(
   );
 
   const outcomes: AuthorWorkstreamOutcome[] = [];
-  const empty: AuthorDeclaration = { dependencies: [], needs: [], unmet: [] };
+  const empty: AuthorDeclaration = {
+    dependencies: [],
+    needs: [],
+    unmet: [],
+    replan: [],
+  };
 
   const authorOne = async (
     workstream: ManifestWorkstream,
@@ -598,6 +620,7 @@ export async function authorWorkstreams(
   ): Promise<{
     outcomes: AuthorWorkstreamOutcome[];
     failedLevel?: number;
+    requestedReplan?: Array<{ workstreamId: string; reason: string }>;
   }> => {
     // Recomputed each pass: a merged edge can move a workstream to a later
     // level than the one it authored in before.
@@ -631,6 +654,13 @@ export async function authorWorkstreams(
       ).map((outcome) => ({ ...outcome, pass }));
       passOutcomes.push(...levelOutcomes);
 
+      const requestedReplan = levelOutcomes.flatMap(({ id, declaration }) =>
+        declaration.replan.map((reason) => ({ workstreamId: id, reason })),
+      );
+      if (requestedReplan.length > 0) {
+        return { outcomes: passOutcomes, requestedReplan };
+      }
+
       // Later levels read the specs this one produced, so a level that did
       // not fully succeed stops rather than authoring against a hole.
       if (levelOutcomes.some(({ status }) => status === "failed")) {
@@ -644,7 +674,11 @@ export async function authorWorkstreams(
   let force = options.force ?? false;
 
   for (let pass = 1; pass <= config.author.maxReconcilePasses; pass += 1) {
-    const { outcomes: passOutcomes, failedLevel } = await runPass(
+    const {
+      outcomes: passOutcomes,
+      failedLevel,
+      requestedReplan,
+    } = await runPass(
       selection,
       force,
       pass,
@@ -670,6 +704,31 @@ export async function authorWorkstreams(
         levels: currentLevels,
         outcomes,
         reconciliation,
+        eventsPath,
+      };
+    }
+
+    if (requestedReplan && requestedReplan.length > 0) {
+      const detail = requestedReplan
+        .map(({ workstreamId, reason }) => `${workstreamId}: ${reason}`)
+        .join("; ");
+      await emit("requires-replan", {
+        pass,
+        reason: "unsafe checkpoint",
+        replan: requestedReplan,
+      });
+      progress(
+        `pass ${pass}: workstream scope is not independently green: ${detail}`,
+      );
+      return {
+        programId: options.programId,
+        result: "REQUIRES_REPLAN",
+        reason: `These workstreams cannot be implemented as independently green checkpoints: ${detail}. Replan the scope or migration order before authoring later workstreams.`,
+        agent: agentLabel,
+        levels: currentLevels,
+        outcomes,
+        reconciliation,
+        replan: requestedReplan,
         eventsPath,
       };
     }
@@ -794,6 +853,70 @@ export async function authorWorkstreams(
     );
     selection = new Set(reauthored);
     force = true;
+  }
+
+  for (const outcome of outcomes) {
+    if (outcome.status === "failed") continue;
+    const workstream = workstreams.find(({ id }) => id === outcome.id);
+    if (!workstream) continue;
+    let assessment;
+    try {
+      assessment = await assessRepositoryExecutionFit(
+        {
+          root,
+          taskPath: workstream.taskFile,
+          visionPath: config.visionPath,
+          contextDocs: config.contextDocs,
+        },
+        config.build.executionProfile,
+      );
+    } catch (error) {
+      return {
+        programId: options.programId,
+        result: "FAILED",
+        reason: `Could not estimate execution fit for ${outcome.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        agent: agentLabel,
+        levels: currentLevels,
+        outcomes,
+        reconciliation,
+        eventsPath,
+      };
+    }
+    outcome.executionFit = {
+      classification: assessment.classification,
+      workingSetTokens: assessment.workingSetTokens,
+      lowerBoundTokens: assessment.lowerBoundTokens,
+      upperBoundTokens: assessment.upperBoundTokens,
+    };
+    await emit("execution-fit", {
+      id: outcome.id,
+      ...outcome.executionFit,
+    });
+    if (assessment.hardFailure) {
+      return {
+        programId: options.programId,
+        result: "REQUIRES_REPLAN",
+        reason: `${outcome.id}'s minimum estimated working set cannot fit the configured ${config.build.executionProfile.contextWindowTokens}-token context window. Split it or correct the execution profile before building.`,
+        agent: agentLabel,
+        levels: currentLevels,
+        outcomes,
+        reconciliation,
+        replan: [
+          {
+            workstreamId: outcome.id,
+            reason: "minimum static working set exceeds physical context capacity",
+          },
+        ],
+        eventsPath,
+      };
+    }
+    if (assessment.classification !== "normal") {
+      progress(
+        `${outcome.id} execution fit: ${assessment.classification} at approximately ${assessment.workingSetTokens} tokens (${assessment.lowerBoundTokens}-${assessment.upperBoundTokens}); this is advisory unless the physical context cannot fit`,
+      );
+    }
   }
 
   const authored = outcomes.filter(({ status }) => status === "authored").length;

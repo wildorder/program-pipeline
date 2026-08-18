@@ -37,8 +37,8 @@ export const SPEC_CONTRACT = {
   },
   successCriterionIdPattern: "SC-\\d{2,}",
   workstreamIdPattern: "WS-\\d{2,}",
-  /** A short note may follow the keyword: `(MODIFY — extend props)`. */
-  fileAnnotationPattern: "\\((?:NEW|MODIFY|DELETE)\\b[^)]*\\)",
+  /** A short note may follow the keyword and wrap across markdown lines. */
+  fileAnnotationPattern: "\\((?:NEW|MODIFY|DELETE)\\b",
   newFileAnnotationPattern: "\\(NEW\\b[^)]*\\)",
   /** Only list items count as file entries; other lines are commentary. */
   fileEntryPattern: "^\\s*(?:[-*]|\\d+\\.)\\s",

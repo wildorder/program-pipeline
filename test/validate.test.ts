@@ -158,6 +158,33 @@ Prose mentioning \`src/other.ts\` is also fine.`,
     expect(report.result).toBe("PASSED");
   });
 
+  it("accepts an annotated file entry whose explanatory note wraps", async () => {
+    const spec = validSpec.replace(
+      "## Files Touched\n- (NEW) `src/core.ts`",
+      `## Files Touched
+- \`src/core.ts\` (MODIFY — this explanation is intentionally long
+  and wraps before the closing parenthesis.)`,
+    );
+    const root = await fixture(
+      manifest([
+        {
+          id: "WS-01",
+          name: "Core",
+          taskFile: "tasks/alpha/ws-01.md",
+          status: "not_started",
+          dependencies: [],
+          packages: ["app"],
+        },
+      ]),
+      { "tasks/alpha/ws-01.md": spec },
+    );
+
+    const report = await validateWorkstreams(root, "alpha");
+
+    expect(report.findings).toEqual([]);
+    expect(report.result).toBe("PASSED");
+  });
+
   it("accepts explicit file deletion annotations", async () => {
     const root = await fixture(
       manifest([

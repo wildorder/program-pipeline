@@ -19,6 +19,37 @@ Read:
 - `AGENTS.md` for repository directives and conventions.
 - Every document listed in `contextDocs` from `pipeline.config.json`, when present.
 
+### Replanning handoff
+
+When a program ID is supplied, check for
+`docs/programs/{program-id}-replan.json` before drafting anything. If it
+exists, this is a replan rather than an isolated new planning session. Read:
+
+- the complete replan report, treating every `replanFindings` entry as a
+  mandatory structural defect to resolve;
+- every `relatedFindings` entry and `checkpointAssessments` entry so the new
+  plan does not preserve a known interface, coverage, dependency, or test
+  defect merely because it was not itself marked `requiresReplan`;
+- the existing program document and manifest;
+- every task file referenced by the existing manifest;
+- the current git status and the actual source files cited by the report's
+  evidence.
+
+Plan from the repository state that exists now, not from the original
+pre-program design. A workstream marked complete is baseline only when its
+implementation is present and the configured verification commands are green.
+If the partially executed repository is red, say so explicitly and make
+restoring the canonical gate the first recovery checkpoint; no later
+workstream may depend on an assumed green state.
+
+Rewrite the existing program document and manifest in place. Treat genuinely
+landed work as current architecture rather than scheduling it again. Give
+replacement work new workstream IDs and new task-file paths so downstream
+authoring never overwrites the superseded specs; old unreferenced specs remain
+historical evidence. The new dependency graph must causally resolve every
+unsafe checkpoint, and the final handoff summary must link the replan report
+alongside the replacement program and manifest.
+
 If no vision document exists at the resolved path, stop. Explain that it should contain the product
 description, architecture, target users, API surface, data model, phase scope,
 and technology stack. For a new repository, suggest the `init-project` skill.

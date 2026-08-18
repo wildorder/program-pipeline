@@ -34,6 +34,7 @@ import {
   type PipelineConfig,
 } from "./pipeline-config.js";
 import { applySeverityPolicy } from "./severity-policy.js";
+import { clearReplanReport, writeReplanReport } from "./replan-report.js";
 import { validateWorkstreams } from "./validate.js";
 import {
   composeCriticCorrectionBrief,
@@ -106,6 +107,8 @@ export interface ValidateLoopResult {
   convergenceReceipt?: string;
   /** Full critic responses, including protocol-repair attempts. */
   criticLogs: string[];
+  /** Durable handoff consumed by plan-program after requires-replan. */
+  replanReport?: string;
 }
 
 export interface ValidateLoopOptions {
@@ -545,6 +548,7 @@ export async function validateLoop(
   let outcome: LoopOutcome = "cap-reached";
   let reason: string | undefined;
   const replanFindings: IdentifiedFinding[] = [];
+  let replanReport: string | undefined;
   const criticLogs: string[] = [];
   const stamp = (options.now?.() ?? new Date())
     .toISOString()
@@ -744,6 +748,28 @@ export async function validateLoop(
       });
       outcome = "requires-replan";
       reason = `${replan.length} finding(s) cannot be fixed by editing specs; the program needs replanning.`;
+      try {
+        const written = await writeReplanReport(
+          root,
+          options.programId,
+          config,
+          {
+            summary: reason,
+            replanFindings: replan,
+            relatedFindings: raised,
+            checkpointAssessments: criticReply.checkpointAssessments,
+            criticSummary: criticSummary.text,
+            criticLogs,
+          },
+          options.now,
+        );
+        replanReport = written.path;
+        progress(`replan report: ${written.path}`);
+      } catch (error) {
+        progress(
+          `WARNING: could not write the replan report: ${jsonError(error)}`,
+        );
+      }
       progress(`round ${round}: ${reason}`);
       break;
     }
@@ -873,6 +899,7 @@ export async function validateLoop(
         config,
       );
       convergenceReceipt = receipt.inputHash;
+      await clearReplanReport(root, options.programId);
       progress(`convergence receipt: ${receipt.inputHash.slice(0, 12)}`);
     } catch (error) {
       return aborted(
@@ -898,6 +925,7 @@ export async function validateLoop(
     replanFindings,
     ...(convergenceReceipt === undefined ? {} : { convergenceReceipt }),
     criticLogs,
+    ...(replanReport === undefined ? {} : { replanReport }),
   };
 }
 

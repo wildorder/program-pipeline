@@ -112,6 +112,13 @@ export {
   type ConvergenceReceiptStatus,
 } from "./convergence-receipt.js";
 export {
+  REPLAN_REPORT_VERSION,
+  clearReplanReport,
+  replanReportPath,
+  writeReplanReport,
+  type ReplanReport,
+} from "./replan-report.js";
+export {
   addDevDependencyCommand,
   detectPackageManager,
   isPnpmWorkspaceRoot,

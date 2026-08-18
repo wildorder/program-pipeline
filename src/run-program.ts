@@ -354,9 +354,27 @@ export async function runProgram(
         `specs(${options.programId}): convergence`,
       );
       if (result.outcome === "requires-replan") {
+        const details = result.replanFindings
+          .map(
+            (finding, index) =>
+              `${index + 1}. [${finding.workstreamId ?? "program"}] ${finding.subject}: ${finding.message}`,
+          )
+          .join("\n");
+        progress("requires replanning:");
+        for (const line of details.split("\n")) progress(`  ${line}`);
+        if (result.replanReport) {
+          progress(`replan with: /plan-program ${options.programId}`);
+          progress(`replan input: ${result.replanReport}`);
+        }
         return finish(
           "FAILED",
-          `The convergence loop found a defect no spec edit can fix. ${result.reason ?? ""} Re-plan with /plan-program, then run again.`.trim(),
+          [
+            `The convergence loop found ${result.replanFindings.length} defect(s) no spec edit can fix:`,
+            details,
+            result.replanReport
+              ? `Replan report: ${result.replanReport}\nRun /plan-program ${options.programId}; it will consume this report automatically.`
+              : `Run /plan-program ${options.programId} and provide the findings above.`,
+          ].join("\n"),
         );
       }
       if (result.outcome === "aborted") {

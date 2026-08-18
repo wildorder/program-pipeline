@@ -735,6 +735,12 @@ program
           for (const finding of result.replanFindings) {
             console.log(`- ${finding.subject}: ${finding.message}`);
           }
+          if (result.replanReport) {
+            console.log(`Replan report: ${result.replanReport}`);
+            console.log(
+              `Run /plan-program ${result.programId}; it will consume this report automatically.`,
+            );
+          }
         }
         if (result.openDisagreements.length > 0) {
           console.log(

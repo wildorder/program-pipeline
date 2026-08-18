@@ -604,6 +604,15 @@ and semantic configuration. Direct `build` refuses a missing or stale receipt;
 `run --from build` automatically inserts deterministic validation and
 convergence before invoking an implementation agent.
 
+When convergence returns **requires-replan**, it writes
+`docs/programs/{program-id}-replan.json` and prints every structural finding
+instead of reducing the result to a count. The report preserves the mandatory
+replan findings with evidence, related findings, all checkpoint assessments,
+the critic summary, semantic input hash, and raw response log paths. Start a
+fresh planning session with `/plan-program {program-id}`; the skill detects the
+report automatically, inspects the partially executed repository, and replaces
+the plan from the current baseline using new workstream IDs and task paths.
+
 Critic responses are protocol-checked. If JSON is missing, malformed, has the
 wrong contract, or omits checkpoint assessments, the same critic gets one
 correction-only retry without repeating the review. Every original and retry

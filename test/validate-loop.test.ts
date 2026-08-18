@@ -556,6 +556,27 @@ describe("convergence loop", () => {
       workstreamId: "WS-01",
       requiresReplan: true,
     });
+    expect(result.replanReport).toBe(
+      join(root, "docs", "programs", "alpha-replan.json"),
+    );
+    const report = JSON.parse(
+      await readFile(result.replanReport!, "utf8"),
+    ) as Record<string, unknown>;
+    expect(report).toMatchObject({
+      schemaVersion: 1,
+      programId: "alpha",
+      outcome: "requires-replan",
+      checkpointAssessments: [
+        {
+          workstreamId: "WS-01",
+          status: "unsafe",
+          reason: "removes the shared type before consumers migrate",
+        },
+      ],
+    });
+    expect(report.replanFindings).toEqual(result.replanFindings);
+    expect(report.relatedFindings).toEqual(result.findings);
+    expect(report.planningInstruction).toContain("/plan-program alpha");
     expect(calls).toHaveLength(1);
   });
 
@@ -601,6 +622,13 @@ describe("convergence loop", () => {
 
   it("converges when the first round finds nothing new", async () => {
     const root = await project();
+    const staleReport = join(
+      root,
+      "docs",
+      "programs",
+      "alpha-replan.json",
+    );
+    await writeFile(staleReport, '{"stale":true}\n', "utf8");
     const { runner, calls } = recorder([criticReply([])]);
     const result = await validateLoop({
       cwd: root,
@@ -610,6 +638,7 @@ describe("convergence loop", () => {
     expect(result.outcome).toBe("converged");
     expect(result.result).toBe("PASSED");
     expect(calls).toHaveLength(1);
+    await expect(readFile(staleReport, "utf8")).rejects.toThrow();
   });
 
   it("swaps critic and writer between rounds so neither grades its own work", async () => {

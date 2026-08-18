@@ -402,6 +402,7 @@ describe("runProgram", () => {
   it("halts --from build before implementation when the refreshed checkpoint is unsafe", async () => {
     const root = await fixture({ git: false });
     let agentCalls = 0;
+    const progress: string[] = [];
 
     const result = await runProgram({
       cwd: root,
@@ -419,10 +420,27 @@ describe("runProgram", () => {
         };
       },
       verifyRunner: async () => ({ exitCode: 0, output: "must not run" }),
+      onProgress: (line) => progress.push(line),
     });
 
     expect(result.result).toBe("FAILED");
-    expect(result.reason).toContain("needs replanning");
+    expect(result.reason).toContain("WS-01 checkpoint safety");
+    expect(result.reason).toContain(
+      "WS-01 deletes a contract while unmigrated consumers remain.",
+    );
+    expect(result.reason).toContain("alpha-replan.json");
+    expect(result.reason).toContain("/plan-program alpha");
+    expect(progress.join("\n")).toContain("requires replanning:");
+    expect(progress.join("\n")).toContain("replan input:");
+    const report = JSON.parse(
+      await readFile(
+        join(root, "docs", "programs", "alpha-replan.json"),
+        "utf8",
+      ),
+    ) as { replanFindings: Array<{ message: string }> };
+    expect(report.replanFindings[0]?.message).toBe(
+      "WS-01 deletes a contract while unmigrated consumers remain.",
+    );
     expect(result.stages.map(({ stage }) => stage)).toEqual([
       "validate",
       "converge",

@@ -9,6 +9,7 @@ import { loadPipelineConfig, type PipelineConfig } from "./pipeline-config.js";
 import { reviewProgram } from "./review-program.js";
 import { validateLoop } from "./validate-loop.js";
 import { validateWorkstreams } from "./validate.js";
+import { replanProgram } from "./replan-program.js";
 
 /**
  * Run the whole pipeline: one command from a planned program to a built one.
@@ -82,6 +83,8 @@ export interface RunProgramOptions {
   verifyRunner?: VerifyRunner;
   now?: () => Date;
   onProgress?: (line: string) => void;
+  /** Internal bounded automatic replan depth. */
+  automaticReplans?: number;
 }
 
 export function parseStage(value: string): RunStage {
@@ -153,7 +156,7 @@ async function workingTreeDirty(
   return status.output
     .split(/\r?\n/u)
     .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+    .filter((line) => /^[ MARC?u!]{2}\s/u.test(line));
 }
 
 /**
@@ -373,6 +376,35 @@ export async function runProgram(
         if (result.replanReport) {
           progress(`replan with: /plan-program ${options.programId}`);
           progress(`replan input: ${result.replanReport}`);
+        }
+        const depth = options.automaticReplans ?? 0;
+        if (depth < 2 && result.replanReport) {
+          progress(`automatic replan ${depth + 1}/2: updating plan artifacts`);
+          let replanned;
+          try {
+            replanned = await replanProgram({
+              cwd: root,
+              programId: options.programId,
+              ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
+              onProgress: progress,
+            });
+          } catch (error) {
+            progress(
+              `automatic replan failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            replanned = { result: "FAILED" as const, reason: String(error), changedPaths: [] };
+          }
+          if (replanned.result === "COMPLETE") {
+            progress(`automatic replan generation: ${replanned.generation ?? "updated"}`);
+            const resumed = await runProgram({
+              ...options,
+              from: "author",
+              automaticReplans: depth + 1,
+            });
+            stages.push(...resumed.stages);
+            return finish(resumed.result, resumed.reason);
+          }
+          progress(`automatic replan failed: ${replanned.reason ?? "unknown error"}`);
         }
         return finish(
           "FAILED",

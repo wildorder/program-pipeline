@@ -66,6 +66,16 @@
         "promptMode": { "enum": ["stdin", "argument"] }
       }
     },
+    "replannerAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "promptMode": { "enum": ["stdin", "argument"] }
+      }
+    },
     "validatorAgent": {
       "type": "object",
       "additionalProperties": false,

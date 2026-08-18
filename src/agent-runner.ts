@@ -194,6 +194,14 @@ export function resolveValidatorAgent(
   return undefined;
 }
 
+/** Headless planner for structural replans; never used for ordinary authoring. */
+export function resolveReplannerAgent(config: PipelineConfig): AgentConfig | undefined {
+  if (config.replannerAgent) return config.replannerAgent;
+  if (config.authorAgent) return config.authorAgent;
+  if (config.validatorAgent) return config.validatorAgent;
+  return resolveAgent(config);
+}
+
 /** Human-readable form of a resolved agent, for plan and approval output. */
 export function describeAgent(agent: AgentConfig): string {
   return [agent.command, ...agent.args].join(" ");

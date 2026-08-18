@@ -472,11 +472,17 @@ export async function authorWorkstreams(
     if (!force && (await pathExists(specPath))) {
       const existing = await readFile(specPath, "utf8");
       const existingGeneration = specGeneration(existing);
-      // Legacy plans are migrated in place once, without spending an agent
-      // invocation. Future replans always carry a distinct generation and
-      // therefore cannot silently reuse a superseded spec.
-      if (existingGeneration === undefined) {
-        await atomicWriteText(specPath, stampSpecGeneration(existing, planGeneration));
+      // Legacy plans predate generation markers. Preserve their existing
+      // behavior without dirtying the user's tree; every replan produced by
+      // the current planner carries an explicit generation and is strict.
+      if (existingGeneration === undefined && planGeneration === LEGACY_PLAN_GENERATION) {
+        return {
+          id: workstream.id,
+          status: "skipped",
+          reason: "spec already exists",
+          declaration: empty,
+        };
+      } else if (existingGeneration === undefined && planGeneration.startsWith("legacy-")) {
         return {
           id: workstream.id,
           status: "skipped",

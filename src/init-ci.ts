@@ -125,6 +125,7 @@ function configuredCommands(config: PipelineConfig): string[] {
     config.agent,
     config.recoveryAgent,
     config.authorAgent,
+    config.replannerAgent,
     config.validatorAgent,
   ]
     .filter((agent): agent is AgentConfig => agent !== undefined)

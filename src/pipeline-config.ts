@@ -88,6 +88,8 @@ export const pipelineConfigSchema = z.object({
    * rewriting expensively authored specs.
    */
   authorAgent: agentSchema.optional(),
+  /** Headless planner used only to repair a convergence replan. */
+  replannerAgent: agentSchema.optional(),
   /** The independent second opinion: spec loop critic and test critique. */
   validatorAgent: agentSchema.optional(),
   models: z.record(z.string(), z.string().min(1)).default({}),

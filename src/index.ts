@@ -129,6 +129,11 @@ export {
 } from "./plan-generation.js";
 export { ignoredArtifacts } from "./artifact-status.js";
 export {
+  replanProgram,
+  type ReplanProgramOptions,
+  type ReplanProgramResult,
+} from "./replan-program.js";
+export {
   addDevDependencyCommand,
   detectPackageManager,
   isPnpmWorkspaceRoot,

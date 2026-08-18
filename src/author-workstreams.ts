@@ -36,6 +36,15 @@ import {
 } from "./reconcile-dependencies.js";
 import { extractJson, hasArrayKey } from "./validate-loop.js";
 import { SPEC_CONTRACT } from "./validate.js";
+import { ignoredArtifacts } from "./artifact-status.js";
+import {
+  LEGACY_PLAN_GENERATION,
+  legacyGenerationFingerprint,
+  readPlanGeneration,
+  specGeneration,
+  stampSpecGeneration,
+  atomicWriteText,
+} from "./plan-generation.js";
 
 /**
  * Author one spec per workstream, each in its own clean agent.
@@ -122,6 +131,10 @@ export interface AuthorProgramResult {
   /** Non-atomic scopes or unsafe migration ordering reported by authors. */
   replan?: Array<{ workstreamId: string; reason: string }>;
   eventsPath?: string;
+  /** Canonical plan/spec artifacts read or written by this run. */
+  artifactPaths?: string[];
+  /** Artifacts hidden by the repository's ignore rules. */
+  ignoredArtifacts?: string[];
 }
 
 export interface AuthorProgramOptions {
@@ -336,11 +349,13 @@ export async function authorWorkstreams(
   );
   let workstreams: ManifestWorkstream[];
   let manifestRaw: string;
+  let planGeneration: string;
   try {
     manifestRaw = await readFile(manifestPath, "utf8");
     workstreams = (
       JSON.parse(manifestRaw) as { workstreams?: ManifestWorkstream[] }
-    ).workstreams ?? [];
+      ).workstreams ?? [];
+    planGeneration = await readPlanGeneration(manifestPath);
   } catch (error) {
     return aborted(
       `Could not read ${manifestPath}: ${
@@ -422,6 +437,9 @@ export async function authorWorkstreams(
       : undefined,
     contextDocs: [] as Array<{ path: string; content: string }>,
   };
+  if (planGeneration === LEGACY_PLAN_GENERATION) {
+    planGeneration = legacyGenerationFingerprint(shared.manifest, shared.programDoc);
+  }
   for (const path of config.contextDocs) {
     const content = await readOptional(resolve(root, path));
     if (content !== undefined) shared.contextDocs.push({ path, content });
@@ -452,12 +470,29 @@ export async function authorWorkstreams(
     const specPath = resolve(root, workstream.taskFile);
 
     if (!force && (await pathExists(specPath))) {
-      return {
-        id: workstream.id,
-        status: "skipped",
-        reason: "spec already exists",
-        declaration: empty,
-      };
+      const existing = await readFile(specPath, "utf8");
+      const existingGeneration = specGeneration(existing);
+      // Legacy plans are migrated in place once, without spending an agent
+      // invocation. Future replans always carry a distinct generation and
+      // therefore cannot silently reuse a superseded spec.
+      if (existingGeneration === undefined) {
+        await atomicWriteText(specPath, stampSpecGeneration(existing, planGeneration));
+        return {
+          id: workstream.id,
+          status: "skipped",
+          reason: "spec already exists",
+          declaration: empty,
+        };
+      } else if (existingGeneration !== planGeneration) {
+        // Fall through to author a replacement at the manifest's new path.
+      } else {
+        return {
+          id: workstream.id,
+          status: "skipped",
+          reason: "spec already exists",
+          declaration: empty,
+        };
+      }
     }
 
     const dependencySpecs: Array<{ id: string; path: string; content: string }> =
@@ -600,6 +635,8 @@ export async function authorWorkstreams(
         reason: `The agent exited successfully but ${workstream.taskFile} does not exist.`,
       };
     }
+    const authored = await readFile(specPath, "utf8");
+    await atomicWriteText(specPath, stampSpecGeneration(authored, planGeneration));
 
     await emit("workstream-authored", {
       id: workstream.id,
@@ -920,6 +957,15 @@ export async function authorWorkstreams(
   }
 
   const authored = outcomes.filter(({ status }) => status === "authored").length;
+  const artifactPaths = [
+    `docs/programs/${options.programId}-manifest.json`,
+    `docs/programs/${options.programId}-program.md`,
+    ...workstreams.map(({ taskFile }) => taskFile),
+  ];
+  const ignored = await ignoredArtifacts(root, artifactPaths);
+  if (ignored.length > 0) {
+    progress(`WARNING: canonical plan artifacts are ignored by Git: ${ignored.join(", ")}`);
+  }
   await emit("author-complete", { programId: options.programId, authored });
   progress(`author ${options.programId} complete: ${authored} spec(s) written`);
 
@@ -931,5 +977,7 @@ export async function authorWorkstreams(
     outcomes,
     reconciliation,
     eventsPath,
+    artifactPaths,
+    ...(ignored.length > 0 ? { ignoredArtifacts: ignored } : {}),
   };
 }

@@ -1,9 +1,10 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { convergenceInputHash } from "./convergence-receipt.js";
 import type { IdentifiedFinding } from "./findings.js";
 import type { PipelineConfig } from "./pipeline-config.js";
 import type { CheckpointAssessment } from "./validate-loop.js";
+import { atomicWriteText } from "./plan-generation.js";
 
 export const REPLAN_REPORT_VERSION = 1;
 
@@ -70,6 +71,6 @@ export async function writeReplanReport(
     planningInstruction: `Run /plan-program ${programId}. The planning skill must read this report and resolve every replanFindings entry before replacing the program plan and manifest.`,
   };
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  await atomicWriteText(path, `${JSON.stringify(report, null, 2)}\n`);
   return { path, report };
 }

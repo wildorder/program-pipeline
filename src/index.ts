@@ -119,6 +119,16 @@ export {
   type ReplanReport,
 } from "./replan-report.js";
 export {
+  LEGACY_PLAN_GENERATION,
+  PLAN_GENERATION_MARKER,
+  atomicWriteText,
+  legacyGenerationFingerprint,
+  readPlanGeneration,
+  specGeneration,
+  stampSpecGeneration,
+} from "./plan-generation.js";
+export { ignoredArtifacts } from "./artifact-status.js";
+export {
   addDevDependencyCommand,
   detectPackageManager,
   isPnpmWorkspaceRoot,

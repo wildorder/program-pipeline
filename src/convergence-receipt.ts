@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { PipelineConfig } from "./pipeline-config.js";
+import { atomicWriteText } from "./plan-generation.js";
 
 export const CONVERGENCE_RECEIPT_VERSION = 1;
 
@@ -172,10 +173,6 @@ export async function writeConvergenceReceipt(
     inputHash: status.expectedHash,
     validatedAt: now().toISOString(),
   };
-  await writeFile(
-    status.path,
-    `${JSON.stringify(receipt, null, 2)}\n`,
-    "utf8",
-  );
+  await atomicWriteText(status.path, `${JSON.stringify(receipt, null, 2)}\n`);
   return receipt;
 }

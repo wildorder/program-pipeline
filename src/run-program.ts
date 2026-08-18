@@ -298,6 +298,14 @@ export async function runProgram(
         ...(options.now ? { now: options.now } : {}),
         onProgress: progress,
       });
+      if (result.artifactPaths && result.artifactPaths.length > 0) {
+        progress(`author artifacts: ${result.artifactPaths.join(", ")}`);
+      }
+      if (result.ignoredArtifacts && result.ignoredArtifacts.length > 0) {
+        progress(
+          `WARNING: these plan artifacts are ignored by Git and will not travel to another runner: ${result.ignoredArtifacts.join(", ")}`,
+        );
+      }
       await record(
         stage,
         result.result,

@@ -42,7 +42,12 @@ If the partially executed repository is red, say so explicitly and make
 restoring the canonical gate the first recovery checkpoint; no later
 workstream may depend on an assumed green state.
 
-Rewrite the existing program document and manifest in place. Treat genuinely
+Rewrite the existing program document and manifest in place. Set or advance a
+unique `program.planGeneration` value (an ISO timestamp plus a short random
+suffix is sufficient) on every new plan or replan. Every replacement task spec
+must carry the matching marker `<!-- program-pipeline:plan-generation=<value> -->`;
+the packaged author runner stamps this marker after writing as a safety net.
+Treat genuinely
 landed work as current architecture rather than scheduling it again. Give
 replacement work new workstream IDs and new task-file paths so downstream
 authoring never overwrites the superseded specs; old unreferenced specs remain
@@ -162,6 +167,11 @@ If `docs/programs/` contains an existing `*-manifest.json`, match its schema exa
 ```
 
 Save it directly to `docs/programs/{program-id}-manifest.json`.
+Keep the manifest, program document, replan report, and every referenced
+`taskFile` trackable by Git. If the repository ignores `tasks/` or
+`docs/programs/`, remove those ignore rules (or explicitly force-add these
+canonical artifacts); a plan that exists only in an ignored working tree is
+not reproducible on CI or another machine.
 
 ### Scope is load-bearing, not decoration
 

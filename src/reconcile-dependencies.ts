@@ -1,4 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
+import { atomicWriteText } from "./plan-generation.js";
 import { findCycles } from "./graph.js";
 
 /**
@@ -124,7 +125,7 @@ export async function writeMergedDependencies(
     const merged = dependencies.get(workstream.id);
     if (merged) workstream.dependencies = merged;
   }
-  await writeFile(manifestPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+  await atomicWriteText(manifestPath, `${JSON.stringify(raw, null, 2)}\n`);
 }
 
 /** Human-readable edge list for progress output and failure reasons. */

@@ -158,6 +158,19 @@ describe("repository execution fit", () => {
     ]);
   });
 
+  it("ignores prose notes and directory references in Files Touched", () => {
+    expect(
+      declaredTouchedFiles(`## Files Touched
+- (MODIFY) \`src/kept.ts\`
+> **UNTOUCHED:** \`src/brand/\`, \`src/other.ts\`
+- (NEW) \`src/added.ts\`
+`),
+    ).toEqual([
+      { path: "src/kept.ts", isNew: false },
+      { path: "src/added.ts", isNew: true },
+    ]);
+  });
+
   it("measures static, spec, and touched-file text with a missing-NEW allowance", async () => {
     const texts = new Map([
       ["AGENTS.md", "aaaa"],

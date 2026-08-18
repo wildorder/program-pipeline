@@ -240,8 +240,13 @@ export function declaredTouchedFiles(specMarkdown: string): DeclaredTouchedFile[
     }
     if (inSection && /^##\s+/u.test(line)) break;
     if (!inSection) continue;
-    const path = line.match(/`([^`]+)`/u)?.[1]?.trim();
-    if (!path || files.has(path)) continue;
+    // Only bullet entries are declarations. Prose notes (for example an
+    // UNTOUCHED blockquote) may contain backticked paths that are not inputs.
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/u);
+    if (!bullet) continue;
+    const path = bullet[1]?.match(/`([^`]+)`/u)?.[1]?.trim();
+    // Directory references are descriptive, not readable source files.
+    if (!path || /[\\/]$/u.test(path) || files.has(path)) continue;
     files.set(path, { path, isNew: /\(\s*NEW\b[^)]*\)/iu.test(line) });
   }
   return [...files.values()];

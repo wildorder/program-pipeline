@@ -135,30 +135,37 @@ interface JsonExtraction {
 
 function balancedObjectCandidates(output: string): string[] {
   const candidates: string[] = [];
-  let start = -1;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = 0; index < output.length; index += 1) {
-    const character = output[index];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === '"') inString = false;
-      continue;
-    }
-    if (character === '"') {
-      inString = true;
-      continue;
-    }
-    if (character === "{") {
-      if (depth === 0) start = index;
-      depth += 1;
-    } else if (character === "}" && depth > 0) {
-      depth -= 1;
-      if (depth === 0 && start >= 0) {
-        candidates.push(output.slice(start, index + 1));
-        start = -1;
+  // Agent CLIs can stream echoed prompts, tool output, and incomplete source
+  // snippets before the final response. An unmatched brace in that transcript
+  // must not absorb a later valid answer, so evaluate every JSON-looking `{`
+  // independently instead of carrying one global depth through the output.
+  for (let start = 0; start < output.length; start += 1) {
+    if (output[start] !== "{") continue;
+    let first = start + 1;
+    while (/\s/u.test(output[first] ?? "")) first += 1;
+    if (output[first] !== '"' && output[first] !== "}") continue;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < output.length; index += 1) {
+      const character = output[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') {
+        inString = true;
+      } else if (character === "{") {
+        depth += 1;
+      } else if (character === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          candidates.push(output.slice(start, index + 1));
+          break;
+        }
       }
     }
   }

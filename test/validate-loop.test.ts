@@ -119,6 +119,31 @@ describe("extractJson block selection", () => {
     expect(reply.findings).toHaveLength(1);
   });
 
+  it("finds the final contract in a CLI transcript with nested fences and unmatched prose quotes", () => {
+    const transcript = [
+      'exec transcript: model said "then inspected the prompt',
+      "```",
+      "### embedded spec",
+      "```ts",
+      'const legacy = { directionId: "warm" };',
+      'const interrupted = { "neverClosed": true;',
+      "```",
+      "tokens used 74,187",
+      "```json",
+      JSON.stringify(answer, null, 2),
+      "```",
+      "```summary",
+      "Found one blocker.",
+      "```",
+    ].join("\n");
+
+    const reply = parseCriticReply(transcript, ["WS-01"]);
+    expect(reply.found).toBe(true);
+    expect(reply.protocolFailure).toBeUndefined();
+    expect(reply.checkpointAssessments).toHaveLength(1);
+    expect(reply.findings).toHaveLength(1);
+  });
+
   it("prefers the last matching block when the critic revises itself", () => {
     const reply = [
       "```json",

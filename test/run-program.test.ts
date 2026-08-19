@@ -90,6 +90,11 @@ async function fixture(options: FixtureOptions = {}): Promise<string> {
     "utf8",
   );
   await writeFile(
+    join(root, "docs", "programs", "alpha-program.md"),
+    "# Alpha\n\nProgram plan.\n",
+    "utf8",
+  );
+  await writeFile(
     join(root, "tasks", "alpha", "ws-01.md"),
     options.brokenSpec
       ? "# WS-01: Core\n\n## Goal\nNo required sections at all.\n"
@@ -128,6 +133,7 @@ const refuse = async (): Promise<never> => {
 
 describe("parseStage", () => {
   it("accepts every declared stage and rejects anything else", () => {
+    expect(parseStage("plan-audit")).toBe("plan-audit");
     expect(parseStage("author")).toBe("author");
     expect(parseStage("  AS-BUILT ")).toBe("as-built");
     expect(() => parseStage("deploy")).toThrow("Unknown stage");
@@ -139,6 +145,7 @@ describe("stagesFor", () => {
     // It never blocks and costs an agent, so the default path to a built
     // program does not pay for it.
     expect(stagesFor({})).toEqual([
+      "plan-audit",
       "author",
       "validate",
       "converge",
@@ -150,6 +157,7 @@ describe("stagesFor", () => {
 
   it("places the review after convergence when asked for", () => {
     expect(stagesFor({ review: true })).toEqual([
+      "plan-audit",
       "author",
       "validate",
       "converge",
@@ -166,6 +174,7 @@ describe("stagesFor", () => {
 
   it("stops after a stage", () => {
     expect(stagesFor({ to: "converge" })).toEqual([
+      "plan-audit",
       "author",
       "validate",
       "converge",
@@ -189,6 +198,60 @@ describe("stagesFor", () => {
 });
 
 describe("runProgram", () => {
+  it("re-audits an automatic replan before authoring", async () => {
+    const root = await fixture({ git: false });
+    const calls: string[] = [];
+    let auditCalls = 0;
+    let authorCalls = 0;
+    const result = await runProgram({
+      cwd: root,
+      programId: "alpha",
+      from: "plan-audit",
+      to: "author",
+      commit: false,
+      agentRunner: async (invocation) => {
+        calls.push(invocation.prompt);
+        if (invocation.prompt.includes("# Audit the executable plan")) {
+          auditCalls += 1;
+          const conflict = auditCalls === 1;
+          return {
+            exitCode: 0,
+            output: `\`\`\`json\n${JSON.stringify({
+              criterionAssessments: [{ criterionId: "SC-01", status: conflict ? "conflict" : "satisfiable", reason: conflict ? "the blanket contract does not match the actual API" : "verified after replan", checkedSubjects: ["public API"], completenessBasis: "complete exported API" }],
+              findings: conflict ? [{ severity: "blocker", category: "acceptance-criteria", subject: "SC-01", message: "The blanket contract is not implementable.", evidence: [{ kind: "concern", named: "API mismatch" }], requiresReplan: true }] : [],
+              classAnalyses: conflict ? [{ subject: "SC-01", scope: "systemic", rootCause: "conceptual family ignores API shapes", affectedSubjects: ["public API"], checkedSubjects: ["public API"], completenessBasis: "complete exported API" }] : [],
+              requirementsChangeRequested: false,
+              criteriaPatches: [],
+            })}\n\`\`\``,
+          };
+        }
+        if (invocation.prompt.includes("headless replanner")) {
+          await writeFile(join(root, "docs", "programs", "alpha-program.md"), "# Alpha\n\nReplanned against the public API.\n", "utf8");
+          return {
+            exitCode: 0,
+            output: `\`\`\`json\n{"resolutionProofs":[{"subject":"SC-01","changedPaths":["docs/programs/alpha-program.md"],"checkedSubjects":["public API"],"completenessBasis":"complete exported API"}]}\n\`\`\`\n\`\`\`summary\nClosed the class. REPLAN_COMPLETE\n\`\`\``,
+          };
+        }
+        if (invocation.prompt.includes("# Author the workstream spec")) {
+          authorCalls += 1;
+          await writeFile(join(root, "tasks", "alpha", "ws-01.md"), spec("WS-01"), "utf8");
+          return { exitCode: 0, output: "```json\n{\"dependencies\":[],\"needs\":[],\"unmet\":[],\"replan\":[]}\n```" };
+        }
+        throw new Error("unexpected agent prompt");
+      },
+    });
+
+    expect(result.result, result.reason).toBe("COMPLETE");
+    expect(auditCalls).toBe(2);
+    expect(authorCalls).toBe(1);
+    expect(result.stages.map(({ stage, result: stageResult }) => [stage, stageResult])).toEqual([
+      ["plan-audit", "REQUIRES_REPLAN"],
+      ["plan-audit", "PASSED"],
+      ["author", "COMPLETE"],
+    ]);
+    expect(calls.filter((prompt) => prompt.includes("headless replanner"))).toHaveLength(1);
+  });
+
   it("refuses to start on a dirty tree, before any stage runs", async () => {
     const root = await fixture();
     await writeFile(join(root, "src", "stray.ts"), "export {};\n", "utf8");
@@ -445,6 +508,8 @@ describe("runProgram", () => {
       "validate",
       "converge",
     ]);
-    expect(agentCalls).toBe(1);
+    // One critic call plus one bounded automatic-replanner attempt; build is
+    // never invoked while the checkpoint remains unsafe.
+    expect(agentCalls).toBe(2);
   });
 });

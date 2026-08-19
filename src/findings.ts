@@ -83,6 +83,16 @@ export interface Finding {
 /** A finding carrying its fingerprint, for briefs and ledger bookkeeping. */
 export type IdentifiedFinding = Finding & { id: string };
 
+/** Proof that a model inspected a defect's whole equivalence class. */
+export interface ClassAnalysis {
+  subject: string;
+  scope: "isolated" | "systemic";
+  rootCause: string;
+  affectedSubjects: string[];
+  checkedSubjects: string[];
+  completenessBasis: string;
+}
+
 export function identify(finding: Finding): IdentifiedFinding {
   return { ...finding, id: fingerprint(finding) };
 }

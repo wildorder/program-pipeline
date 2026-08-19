@@ -2,12 +2,13 @@ import { access, mkdir, rename, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { convergenceInputHash } from "./convergence-receipt.js";
-import type { IdentifiedFinding } from "./findings.js";
+import type { ClassAnalysis, IdentifiedFinding } from "./findings.js";
 import type { PipelineConfig } from "./pipeline-config.js";
 import type { CheckpointAssessment } from "./validate-loop.js";
+import type { CriteriaPatch } from "./validate-loop.js";
 import { atomicWriteText } from "./plan-generation.js";
 
-export const REPLAN_REPORT_VERSION = 1;
+export const REPLAN_REPORT_VERSION = 2;
 
 export interface ReplanReport {
   schemaVersion: typeof REPLAN_REPORT_VERSION;
@@ -18,6 +19,10 @@ export interface ReplanReport {
   summary: string;
   replanFindings: IdentifiedFinding[];
   relatedFindings: IdentifiedFinding[];
+  /** Root-cause closure obligations discovered by the plan/spec critic. */
+  classAnalyses: ClassAnalysis[];
+  /** Intent-preserving criterion repairs the replanner is allowed to apply. */
+  criteriaPatches: CriteriaPatch[];
   checkpointAssessments: CheckpointAssessment[];
   criticSummary: string;
   criticLogs: string[];
@@ -59,6 +64,8 @@ export async function writeReplanReport(
     checkpointAssessments: CheckpointAssessment[];
     criticSummary: string;
     criticLogs: string[];
+    classAnalyses?: ClassAnalysis[];
+    criteriaPatches?: CriteriaPatch[];
   },
   now: () => Date = () => new Date(),
 ): Promise<{ path: string; report: ReplanReport }> {
@@ -94,10 +101,12 @@ export async function writeReplanReport(
     summary: input.summary,
     replanFindings: input.replanFindings,
     relatedFindings: input.relatedFindings,
+    classAnalyses: input.classAnalyses ?? [],
+    criteriaPatches: input.criteriaPatches ?? [],
     checkpointAssessments: input.checkpointAssessments,
     criticSummary: input.criticSummary,
     criticLogs: input.criticLogs.map((log) => portableLogPath(root, log)),
-    planningInstruction: `Run /plan-program ${programId}. The planning skill must read this report and resolve every replanFindings entry before replacing the program plan and manifest.`,
+    planningInstruction: `Run /plan-program ${programId}. Resolve every replanFindings and blocker/major relatedFindings entry. For each classAnalyses entry, inspect every checked subject and close the root-cause class rather than patching only the named example. Apply only the explicitly listed intent-preserving criteriaPatches; any other requirements change needs a human decision.`,
     ...(supersedes === undefined ? {} : { supersedes }),
   };
   await mkdir(dirname(path), { recursive: true });

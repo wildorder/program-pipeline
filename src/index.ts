@@ -1,4 +1,11 @@
 export {
+  auditPlan,
+  type CriterionAssessment,
+  type PlanAuditOptions,
+  type PlanAuditResult,
+  type PlanClassAnalysis,
+} from "./plan-audit.js";
+export {
   defaultAgentRunner,
   defaultVerifyRunner,
   describeAgent,
@@ -252,6 +259,7 @@ export {
   measured,
   sortBySeverity,
   type Evidence,
+  type ClassAnalysis,
   type Finding,
   type FindingCategory,
   type Severity,

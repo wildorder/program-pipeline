@@ -15,6 +15,7 @@ import {
   RUN_STAGES,
   type RunStage,
 } from "./run-program.js";
+import { auditPlan } from "./plan-audit.js";
 import {
   addDevDependencyCommand,
   detectPackageManager,
@@ -451,7 +452,7 @@ program
 program
   .command("run")
   .description(
-    "Run the whole pipeline: author, validate, converge, criteria, build, snapshot",
+    "Run the whole pipeline: audit plan, author, validate, converge, criteria, build, snapshot",
   )
   .argument("<program-id>", "Program ID")
   .option("--cwd <path>", "Project directory", process.cwd())
@@ -512,6 +513,27 @@ program
       else if (result.result === "STOPPED") process.exitCode = 2;
     },
   );
+
+program
+  .command("plan-audit")
+  .description("Critique the program plan against repository reality before authoring specs")
+  .argument("<program-id>", "Program ID")
+  .option("--cwd <path>", "Project directory", process.cwd())
+  .option("--json", "Print a machine-readable report", false)
+  .action(async (programId: string, options: { cwd: string; json: boolean }) => {
+    const result = await auditPlan({
+      cwd: options.cwd,
+      programId,
+      onProgress: (line) => { if (!options.json) console.log(line); },
+    });
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      console.log(`plan-audit: ${result.result}`);
+      if (result.reason) console.log(result.reason);
+      if (result.replanReport) console.log(`replan report: ${result.replanReport}`);
+    }
+    if (result.result !== "PASSED") process.exitCode = 1;
+  });
 
 program
   .command("author")

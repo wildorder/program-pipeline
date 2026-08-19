@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { summaryContract } from "./agent-summary.js";
 import {
   FINDING_CATEGORIES,
+  type ClassAnalysis,
   type Finding,
   type IdentifiedFinding,
 } from "./findings.js";
@@ -140,6 +141,16 @@ Reply with one fenced \`\`\`json block and nothing that matters outside it:
       "requiresReplan": false
     }
   ],
+  "classAnalyses": [
+    {
+      "subject": "same exact subject as a blocker/major finding",
+      "scope": "isolated" | "systemic",
+      "rootCause": "underlying cause, not the first observed symptom",
+      "affectedSubjects": ["every member that requires repair"],
+      "checkedSubjects": ["every analogous member inspected"],
+      "completenessBasis": "canonical registry/list/union proving the set is complete"
+    }
+  ],
   "requirementsChangeRequested": false,
   "requirementsChangeReason": "only when a user requirement or success criterion itself must change",
   "criteriaPatches": [
@@ -160,6 +171,13 @@ Keep "subject" stable for the same underlying issue across rounds — it is how
 a re-raised finding is recognized as the same one, so do not reword it to
 describe the same problem differently. Return an empty findings array if you
 find nothing.
+
+Every blocker and major finding must have one classAnalyses entry with the
+same subject. If a rule applies to a list, command family, route family,
+schema union, or repeated interface pattern, enumerate and inspect the complete
+set in this round. Do not report one counterexample and leave equivalent
+members for a later round. Name the canonical source that makes the checked
+set exhaustive in completenessBasis.
 
 Return exactly one checkpoint assessment for every workstream in this round:
 ${expectedWorkstreamIds.join(", ") || "(none)"}. An unsafe assessment is a
@@ -356,6 +374,7 @@ export function composeWriterBrief(
   sources: BriefSources,
   findings: IdentifiedFinding[],
   context: RoundContext,
+  classAnalyses: ClassAnalysis[] = [],
 ): string {
   const list = findings
     .map((finding, index) => {
@@ -372,6 +391,12 @@ export function composeWriterBrief(
       return `${index + 1}. [id ${finding.id}] [${finding.severity}] ${scope}${finding.subject} — ${finding.message}\n   evidence: ${evidence}`;
     })
     .join("\n");
+  const closure = classAnalyses
+    .filter((analysis) => findings.some(({ subject }) => subject === analysis.subject))
+    .map((analysis) =>
+      `- ${analysis.subject}: ${analysis.scope}; root cause: ${analysis.rootCause}; affected: ${analysis.affectedSubjects.join(", ") || "none"}; checked: ${analysis.checkedSubjects.join(", ")}; complete because: ${analysis.completenessBasis}`,
+    )
+    .join("\n");
 
   return [
     `# Apply validation fixes for program ${sources.programId}`,
@@ -384,12 +409,17 @@ export function composeWriterBrief(
     "",
     "- Do not shorten a spec to reduce its length, and do not delete inlined interfaces, implementation steps, tests, or acceptance criteria. Detail a build agent needs is not bloat.",
     "- Do not split a workstream or change user requirements. You may repair manifest dependencies, task paths, ownership, and program-plan descriptions when the change preserves the declared requirements and keeps the plan coherent.",
+    "- Fix the root-cause class, not only the named example. Inspect every analogous subject named by the critic and make coordinated program, manifest, and spec edits where required.",
     "- You may decline any finding you believe is wrong. Declining is a legitimate outcome and it will be recorded, not overridden. Give a real reason.",
     "- Do not commit.",
     "",
     "## Findings",
     "",
     list,
+    "",
+    "## Root-cause closure obligations",
+    "",
+    closure || "No blocker/major class analyses apply.",
     "",
     "## Material",
     "",
@@ -400,10 +430,10 @@ export function composeWriterBrief(
     "After making your edits, reply with one fenced ```json block:",
     "",
     "```json",
-    '{ "applied": ["<id>"], "rejected": [ { "id": "<id>", "reason": "why this finding does not hold" } ] }',
+    '{ "applied": ["<id>"], "rejected": [ { "id": "<id>", "reason": "why this finding does not hold" } ], "resolutionProofs": [ { "id": "<applied-id>", "changedPaths": ["path"], "checkedSubjects": ["every analogous member inspected"], "completenessBasis": "why the checked set is exhaustive" } ] }',
     "```",
     "",
-    "Every finding id must appear in exactly one of the two lists.",
+    "Every finding id must appear in exactly one of the two lists. Every applied id must also have one complete resolutionProofs entry.",
     "",
     summaryContract(),
   ].join("\n");

@@ -11,6 +11,8 @@ import { resolveSummary } from "./agent-summary.js";
 import { atomicWriteText } from "./plan-generation.js";
 import { loadPipelineConfig, type PipelineConfig } from "./pipeline-config.js";
 import { replanReportPath } from "./replan-report.js";
+import { extractJson, hasArrayKey, type CriteriaPatch } from "./validate-loop.js";
+import type { ReplanReport } from "./replan-report.js";
 
 export interface ReplanProgramOptions {
   cwd: string;
@@ -27,9 +29,36 @@ export interface ReplanProgramResult {
   changedPaths: string[];
 }
 
-function hashRequirements(manifest: string): string {
+interface Criterion { id?: unknown; description?: unknown; [key: string]: unknown }
+
+function criteria(manifest: string): Criterion[] {
   const parsed = JSON.parse(manifest) as { successCriteria?: unknown };
-  return JSON.stringify(parsed.successCriteria ?? null);
+  return Array.isArray(parsed.successCriteria) ? parsed.successCriteria as Criterion[] : [];
+}
+
+function criteriaChangeAllowed(before: string, after: string, patches: CriteriaPatch[]): boolean {
+  const previous = criteria(before);
+  const next = criteria(after);
+  if (JSON.stringify(previous) === JSON.stringify(next)) return true;
+  if (previous.length !== next.length) return false;
+  const allowed = new Map(
+    patches
+      .filter((patch) => patch.kind === "clarification" && patch.intentPreserved)
+      .map((patch) => [patch.criterionId, patch]),
+  );
+  for (let index = 0; index < previous.length; index += 1) {
+    const left = previous[index];
+    const right = next[index];
+    if (!left || !right || left.id !== right.id) return false;
+    if (JSON.stringify(left) === JSON.stringify(right)) continue;
+    if (typeof left.id !== "string") return false;
+    const patch = allowed.get(left.id);
+    if (!patch || left.description !== patch.before || right.description !== patch.after) return false;
+    const leftRest = { ...left, description: undefined };
+    const rightRest = { ...right, description: undefined };
+    if (JSON.stringify(leftRest) !== JSON.stringify(rightRest)) return false;
+  }
+  return true;
 }
 
 function brief(programId: string, report: string, program: string, manifest: string): string {
@@ -40,12 +69,21 @@ workstream boundaries, dependency graph, taskFile paths, and sequencing so the
 reported structural defects are resolved.
 
 Hard rules:
-- Do not change user requirements or success criteria.
+- Do not change user requirements. Success criteria may change only through an
+  exact intent-preserving criteriaPatches entry in the report.
 - Do not edit source code, tests, AGENTS.md, vision, or any file outside the
   program document and manifest.
 - Preserve landed work and preserve superseded task specs as historical files.
 - Set program.planGeneration to a new unique value.
+- Resolve every blocker/major in both replanFindings and relatedFindings.
+- For every classAnalyses entry, inspect the whole checked set and repair the
+  root cause across every affected subject. Do not fix only the example that
+  triggered the report.
 - Write a concise fenced \`summary\` block ending with REPLAN_COMPLETE.
+- Also return one fenced JSON object with resolutionProofs. Each proof names a
+  finding subject, changed artifacts, every analogous subject checked, and why
+  that set is exhaustive:
+  { "resolutionProofs": [{ "subject": "SC-03", "changedPaths": ["docs/programs/x-program.md"], "checkedSubjects": ["audit", "surface bind"], "completenessBasis": "complete command list in SC-03" }] }
 
 Replan report:
 ---
@@ -74,6 +112,7 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
     readFile(manifestPath, "utf8"),
     readFile(programPath, "utf8"),
   ]);
+  const parsedReport = JSON.parse(report) as Partial<ReplanReport>;
   const runner = options.agentRunner ?? defaultAgentRunner;
   const progress = options.onProgress ?? (() => {});
   const label = describeAgent(agent);
@@ -96,12 +135,46 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
       changedPaths: [],
     };
   }
+  const proofBlock = extractJson(result.output, (value) => hasArrayKey(value, "resolutionProofs"));
+  const proofs = typeof proofBlock === "object" && proofBlock !== null
+    ? (proofBlock as { resolutionProofs?: unknown }).resolutionProofs
+    : undefined;
+  const validProofSubjects = new Set(
+    Array.isArray(proofs)
+      ? proofs.flatMap((proof) => {
+          if (typeof proof !== "object" || proof === null) return [];
+          const entry = proof as Record<string, unknown>;
+          return typeof entry.subject === "string" &&
+            Array.isArray(entry.changedPaths) && entry.changedPaths.length > 0 &&
+            Array.isArray(entry.checkedSubjects) && entry.checkedSubjects.length > 0 &&
+            typeof entry.completenessBasis === "string" && entry.completenessBasis.trim() !== ""
+            ? [entry.subject]
+            : [];
+        })
+      : [],
+  );
+  const proofObligations = new Set([
+    ...(parsedReport.replanFindings ?? []).map(({ subject }) => subject),
+    ...(parsedReport.relatedFindings ?? [])
+      .filter(({ severity }) => severity === "blocker" || severity === "major")
+      .map(({ subject }) => subject),
+    ...(parsedReport.classAnalyses ?? []).map(({ subject }) => subject),
+  ]);
+  const missingProofs = [...proofObligations].filter((subject) => !validProofSubjects.has(subject));
+  if (missingProofs.length > 0) {
+    return {
+      result: "FAILED",
+      reason: `Replanner omitted class-wide resolution proof for: ${missingProofs.join(", ")}.`,
+      agent: label,
+      changedPaths: [],
+    };
+  }
   const [afterManifest, afterProgram] = await Promise.all([
     readFile(manifestPath, "utf8"),
     readFile(programPath, "utf8"),
   ]);
   const parsed = JSON.parse(afterManifest) as { program?: { planGeneration?: unknown } };
-  if (hashRequirements(beforeManifest) !== hashRequirements(afterManifest)) {
+  if (!criteriaChangeAllowed(beforeManifest, afterManifest, parsedReport.criteriaPatches ?? [])) {
     return {
       result: "FAILED",
       reason: "Replanner changed success criteria; automatic replanning is blocked. A human requirements decision is required.",

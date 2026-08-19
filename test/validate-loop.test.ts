@@ -51,6 +51,14 @@ describe("extractJson block selection", () => {
         evidence: [{ kind: "concern", named: "uncovered criterion" }],
       },
     ],
+    classAnalyses: [{
+      subject: "SC-02",
+      scope: "isolated",
+      rootCause: "criterion has no owner",
+      affectedSubjects: ["SC-02"],
+      checkedSubjects: ["SC-02"],
+      completenessBasis: "manifest success criteria and workstream traceability",
+    }],
   };
 
   /** A critic citing a manifest fragment as evidence, after its answer. */
@@ -96,6 +104,8 @@ describe("extractJson block selection", () => {
       missingAssessments: [],
       requirementsChangeRequested: false,
       criteriaPatches: [],
+      classAnalyses: [],
+      missingClassAnalyses: [],
     });
     expect(parseCriticReply("Looks good to me!").found).toBe(false);
     expect(parseCriticReply('```json\n{"notes":[]}\n```').found).toBe(false);
@@ -242,16 +252,25 @@ function criticReply(
     },
   ],
 ): string {
+  const completed = findings.map((finding) => ({
+    severity: "major",
+    category: "test-quality",
+    subject: "Tests case 1",
+    message: "Assertion does not discriminate.",
+    evidence: [{ kind: "concern", named: "tautological assertion" }],
+    workstreamId: "WS-01",
+    ...finding,
+  }));
   return `Here is my review.\n\n\`\`\`json\n${JSON.stringify({
     checkpointAssessments,
-    findings: findings.map((finding) => ({
-      severity: "major",
-      category: "test-quality",
-      subject: "Tests case 1",
-      message: "Assertion does not discriminate.",
-      evidence: [{ kind: "concern", named: "tautological assertion" }],
-      workstreamId: "WS-01",
-      ...finding,
+    findings: completed,
+    classAnalyses: completed.map(({ subject }) => ({
+      subject,
+      scope: "isolated",
+      rootCause: "the named test does not discriminate",
+      affectedSubjects: [subject],
+      checkedSubjects: [subject],
+      completenessBasis: "the numbered test case named by the finding",
     })),
   })}\n\`\`\`\n`;
 }
@@ -260,6 +279,12 @@ function writerReply(applied: string[], rejected: Array<[string, string]> = []):
   return `Done.\n\n\`\`\`json\n${JSON.stringify({
     applied,
     rejected: rejected.map(([id, reason]) => ({ id, reason })),
+    resolutionProofs: applied.map((id) => ({
+      id,
+      changedPaths: ["tasks/alpha/ws-01.md"],
+      checkedSubjects: ["the complete numbered test case"],
+      completenessBasis: "the finding identifies one isolated test case",
+    })),
   })}\n\`\`\``;
 }
 
@@ -460,6 +485,14 @@ describe("convergence loop", () => {
           evidence: [{ kind: "concern", named: "uncovered criterion" }],
         },
       ],
+      classAnalyses: [{
+        subject: "SC-02",
+        scope: "isolated",
+        rootCause: "criterion has no owner",
+        affectedSubjects: ["SC-02"],
+        checkedSubjects: ["SC-02"],
+        completenessBasis: "manifest criterion list",
+      }],
     }),
     "```",
   ].join("\n");
@@ -532,6 +565,21 @@ describe("convergence loop", () => {
     expect(calls).toHaveLength(2);
   });
 
+  it("fails closed when a blocker or major has no class-wide analysis", async () => {
+    const root = await project();
+    const incomplete = `\`\`\`json\n${JSON.stringify({
+      checkpointAssessments: [{ workstreamId: "WS-01", status: "safe", reason: "green" }],
+      findings: [{ severity: "major", category: "acceptance-criteria", subject: "SC-01", message: "one command conflicts", evidence: [{ kind: "concern", named: "signature mismatch" }] }],
+      classAnalyses: [],
+    })}\n\`\`\``;
+    const { runner, calls } = recorder([incomplete, incomplete]);
+    const result = await validateLoop({ cwd: root, programId: "alpha", agentRunner: runner });
+    expect(result.outcome).toBe("aborted");
+    expect(result.reason).toContain("missing-class-analysis");
+    expect(result.reason).toContain("SC-01");
+    expect(calls).toHaveLength(2);
+  });
+
   it("turns an unsafe checkpoint assessment into an immediate replan", async () => {
     const root = await project();
     const { runner, calls } = recorder([
@@ -565,7 +613,7 @@ describe("convergence loop", () => {
       await readFile(result.replanReport!, "utf8"),
     ) as Record<string, unknown>;
     expect(report).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       programId: "alpha",
       outcome: "requires-replan",
       checkpointAssessments: [
@@ -595,6 +643,18 @@ describe("convergence loop", () => {
     expect(result.outcome).toBe("aborted");
     expect(result.result).toBe("FAILED");
     expect(result.reason).toContain("no verdict block");
+  });
+
+  it("fails when the writer claims a fix without a closure proof", async () => {
+    const root = await project();
+    const findingId = idOf({});
+    const { runner } = recorder([
+      criticReply([{}]),
+      `\`\`\`json\n${JSON.stringify({ applied: [findingId], rejected: [], resolutionProofs: [] })}\n\`\`\``,
+    ]);
+    const result = await validateLoop({ cwd: root, programId: "alpha", agentRunner: runner });
+    expect(result.outcome).toBe("aborted");
+    expect(result.reason).toContain("without class-wide resolution proof");
   });
 
   it("still reads the findings when the critic quotes json after them", async () => {

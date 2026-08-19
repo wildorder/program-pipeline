@@ -10,6 +10,7 @@ import { reviewProgram } from "./review-program.js";
 import { validateLoop } from "./validate-loop.js";
 import { validateWorkstreams } from "./validate.js";
 import { replanProgram } from "./replan-program.js";
+import { auditPlan } from "./plan-audit.js";
 
 /**
  * Run the whole pipeline: one command from a planned program to a built one.
@@ -29,6 +30,7 @@ import { replanProgram } from "./replan-program.js";
  */
 
 export const RUN_STAGES = [
+  "plan-audit",
   "author",
   "validate",
   "converge",
@@ -42,6 +44,7 @@ export type RunStage = (typeof RUN_STAGES)[number];
 
 /** Stages the default run performs, in order. */
 const DEFAULT_STAGES: readonly RunStage[] = [
+  "plan-audit",
   "author",
   "validate",
   "converge",
@@ -292,8 +295,58 @@ export async function runProgram(
     stages.push(entry);
   };
 
+  const commitAutomaticReplan = async (): Promise<void> => {
+    if (!commitsEnabled) return;
+    const committed = await commitStage(
+      root,
+      logDir,
+      `plan(${options.programId}): automatic replan`,
+    );
+    if (committed.sha) progress(`replan: committed ${committed.sha}`);
+    else if (committed.error) progress(`replan: ${committed.error}; changes left in the tree`);
+  };
+
   for (const stage of planned) {
     progress(`\n=== ${stage} ===`);
+
+    if (stage === "plan-audit") {
+      const result = await auditPlan({
+        cwd: root,
+        programId: options.programId,
+        ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
+        ...(options.now ? { now: options.now } : {}),
+        onProgress: progress,
+      });
+      await record(stage, result.result, result.reason);
+      if (result.result === "PASSED") continue;
+      if (result.result === "HUMAN_REQUIRED") {
+        return finish("FAILED", `Plan audit requires a human requirements decision: ${result.reason ?? "review the reported conflict"}`);
+      }
+      if (result.result === "REQUIRES_REPLAN" && result.replanReport) {
+        const depth = options.automaticReplans ?? 0;
+        if (depth < 2) {
+          progress(`automatic replan ${depth + 1}/2: repairing plan before authoring`);
+          const replanned = await replanProgram({
+            cwd: root,
+            programId: options.programId,
+            ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
+            onProgress: progress,
+          });
+          if (replanned.result === "COMPLETE") {
+            await commitAutomaticReplan();
+            const resumed = await runProgram({
+              ...options,
+              from: "plan-audit",
+              automaticReplans: depth + 1,
+            });
+            stages.push(...resumed.stages);
+            return finish(resumed.result, resumed.reason);
+          }
+          progress(`automatic replan failed: ${replanned.reason ?? "unknown error"}`);
+        }
+      }
+      return finish("FAILED", `Plan audit ${result.result}. ${result.reason ?? ""}${result.replanReport ? ` Replan report: ${result.replanReport}` : ""}`.trim());
+    }
 
     if (stage === "author") {
       const result = await authorWorkstreams({
@@ -329,9 +382,10 @@ export async function runProgram(
               onProgress: progress,
             });
             if (replanned.result === "COMPLETE") {
+              await commitAutomaticReplan();
               const resumed = await runProgram({
                 ...options,
-                from: "author",
+                from: "plan-audit",
                 automaticReplans: depth + 1,
               });
               stages.push(...resumed.stages);
@@ -424,10 +478,11 @@ export async function runProgram(
             replanned = { result: "FAILED" as const, reason: String(error), changedPaths: [] };
           }
           if (replanned.result === "COMPLETE") {
+            await commitAutomaticReplan();
             progress(`automatic replan generation: ${replanned.generation ?? "updated"}`);
             const resumed = await runProgram({
               ...options,
-              from: "author",
+              from: "plan-audit",
               automaticReplans: depth + 1,
             });
             stages.push(...resumed.stages);

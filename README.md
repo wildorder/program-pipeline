@@ -32,7 +32,8 @@ run from a terminal or CI rather than from inside a chat session:
 npx --yes @wildorder/program-pipeline run phase-1
 ```
 
-That authors the specs, validates them, converges them, collects the
+That audits the executable plan against the repository, authors the specs,
+validates them, converges them, collects the
 acceptance criteria, builds, and snapshots — committing between stages and
 stopping only on a real failure or at the criteria gate.
 
@@ -277,7 +278,7 @@ npx --yes @wildorder/program-pipeline run phase-1 --from build
 npx --yes @wildorder/program-pipeline run phase-1 --review
 ```
 
-Stages, in order: **author → validate → converge → criteria → build →
+Stages, in order: **plan-audit → author → validate → converge → criteria → build →
 as-built**. Each one commits what it produced, so a completed run leaves a
 readable history rather than a pile of uncommitted work, and the next stage
 never trips over the previous one's output.
@@ -303,6 +304,15 @@ Everything else either continues or fails loudly. `validate` runs before the
 expensive stages deliberately — a mechanical defect caught there costs
 seconds, and the same defect found by the convergence loop costs two agent
 invocations.
+
+`plan-audit` runs the independent `validatorAgent` before authoring spends one
+agent session per workstream. It assesses every success criterion exactly once
+against actual repository commands, signatures, routes, schemas, and
+interfaces. When a criterion applies to a family, the critic must enumerate
+the complete family from a canonical registry/list/union and return a
+class-wide root-cause analysis. Missing criterion coverage or missing class
+analysis is a protocol failure, never a pass. A structural defect produces the
+normal replan report; automatic replanning is audited again before authoring.
 
 `review` is **not** in the default sequence. It never blocks and it costs an
 agent, so the default path to a built program does not pay for it; add
@@ -642,7 +652,7 @@ separate jobs:
 | --- | --- | --- |
 | `agent` | Implements workstreams. A cheaper model is usually the right call. | `build` |
 | `authorAgent` | Reasons about specs — critic and writer in the loop. | `converge` |
-| `validatorAgent` | The independent second opinion. | `converge`, test critique |
+| `validatorAgent` | The independent second opinion. | `plan-audit`, `converge`, test critique |
 
 Each block declares an invocation mechanism — command, base args, prompt mode
 — and the runner passes the args verbatim. A model flag for that CLI belongs
@@ -902,8 +912,9 @@ Everything after planning is `program-pipeline run`, which sequences the
 stages below and commits between them:
 
 ```text
-/plan-program        HUMAN   design, scope, decompose
-  run ┬ author               one clean agent per workstream, per level
+  /plan-program        HUMAN   design, scope, decompose
+    run ┬ plan-audit           source-grounded criterion and defect-class audit
+        ├ author               one clean agent per workstream, per level
       ├ validate             deterministic, free, before anything expensive
       ├ converge             critic/writer spec convergence
       ├ review               read-only architecture review (--review)

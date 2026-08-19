@@ -22,6 +22,7 @@ import {
   identify,
   sortBySeverity,
   type Evidence,
+  type ClassAnalysis,
   type Finding,
   type FindingCategory,
   type IdentifiedFinding,
@@ -298,6 +299,34 @@ function coerceEvidence(raw: unknown): Evidence[] {
   return evidence;
 }
 
+function coerceClassAnalyses(raw: unknown): ClassAnalysis[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    if (typeof item !== "object" || item === null) return [];
+    const record = item as Record<string, unknown>;
+    const list = (value: unknown): string[] =>
+      Array.isArray(value)
+        ? [...new Set(value.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean))]
+        : [];
+    const checkedSubjects = list(record.checkedSubjects);
+    if (
+      typeof record.subject !== "string" || record.subject.trim() === "" ||
+      (record.scope !== "isolated" && record.scope !== "systemic") ||
+      typeof record.rootCause !== "string" || record.rootCause.trim() === "" ||
+      checkedSubjects.length === 0 ||
+      typeof record.completenessBasis !== "string" || record.completenessBasis.trim() === ""
+    ) return [];
+    return [{
+      subject: record.subject.trim(),
+      scope: record.scope,
+      rootCause: record.rootCause.trim(),
+      affectedSubjects: list(record.affectedSubjects),
+      checkedSubjects,
+      completenessBasis: record.completenessBasis.trim(),
+    }];
+  });
+}
+
 export interface CriticReply {
   /**
    * False when the reply contained no block matching the findings contract.
@@ -311,6 +340,8 @@ export interface CriticReply {
   requirementsChangeRequested: boolean;
   requirementsChangeReason?: string;
   criteriaPatches: CriteriaPatch[];
+  classAnalyses: ClassAnalysis[];
+  missingClassAnalyses: string[];
   protocolFailure?: CriticProtocolFailure;
 }
 
@@ -346,6 +377,8 @@ export function parseCriticReply(
       missingAssessments: [...expectedWorkstreamIds],
       requirementsChangeRequested: false,
       criteriaPatches: [],
+      classAnalyses: [],
+      missingClassAnalyses: [],
       ...(extraction.failure === undefined
         ? {}
         : { protocolFailure: extraction.failure }),
@@ -361,6 +394,8 @@ export function parseCriticReply(
       missingAssessments: [...expectedWorkstreamIds],
       requirementsChangeRequested: false,
       criteriaPatches: [],
+      classAnalyses: [],
+      missingClassAnalyses: [],
     };
   }
   const findings: Finding[] = [];
@@ -387,6 +422,7 @@ export function parseCriticReply(
     });
   }
   const assessmentById = new Map<string, CheckpointAssessment>();
+  const classAnalyses = coerceClassAnalyses(parsedRecord.classAnalyses);
   const criteriaPatches = Array.isArray(parsedRecord.criteriaPatches)
     ? parsedRecord.criteriaPatches.flatMap((item) => {
         if (typeof item !== "object" || item === null) return [];
@@ -442,6 +478,11 @@ export function parseCriticReply(
       ? { requirementsChangeReason: parsedRecord.requirementsChangeReason.trim() }
       : {}),
     criteriaPatches,
+    classAnalyses,
+    missingClassAnalyses: findings
+      .filter(haltsConvergence)
+      .map(({ subject }) => subject)
+      .filter((subject) => !classAnalyses.some((analysis) => analysis.subject === subject)),
   };
 }
 
@@ -453,6 +494,12 @@ export function parseCriticFindings(output: string): Finding[] {
 export interface WriterVerdict {
   applied: string[];
   rejected: Array<{ id: string; reason: string }>;
+  resolutionProofs: Array<{
+    id: string;
+    changedPaths: string[];
+    checkedSubjects: string[];
+    completenessBasis: string;
+  }>;
   /** False when the reply contained no block matching the verdict contract. */
   found: boolean;
 }
@@ -462,7 +509,7 @@ export function parseWriterVerdict(output: string): WriterVerdict {
     output,
     (value) => hasArrayKey(value, "applied") || hasArrayKey(value, "rejected"),
   );
-  const empty: WriterVerdict = { applied: [], rejected: [], found: false };
+  const empty: WriterVerdict = { applied: [], rejected: [], resolutionProofs: [], found: false };
   if (typeof parsed !== "object" || parsed === null) return empty;
   const record = parsed as Record<string, unknown>;
   const applied = Array.isArray(record.applied)
@@ -484,7 +531,17 @@ export function parseWriterVerdict(output: string): WriterVerdict {
         ];
       })
     : [];
-  return { applied, rejected, found: true };
+  const resolutionProofs = Array.isArray(record.resolutionProofs)
+    ? record.resolutionProofs.flatMap((item) => {
+        if (typeof item !== "object" || item === null) return [];
+        const proof = item as Record<string, unknown>;
+        const changedPaths = Array.isArray(proof.changedPaths) ? proof.changedPaths.filter((value): value is string => typeof value === "string" && value.trim() !== "") : [];
+        const checkedSubjects = Array.isArray(proof.checkedSubjects) ? proof.checkedSubjects.filter((value): value is string => typeof value === "string" && value.trim() !== "") : [];
+        if (typeof proof.id !== "string" || changedPaths.length === 0 || checkedSubjects.length === 0 || typeof proof.completenessBasis !== "string" || proof.completenessBasis.trim() === "") return [];
+        return [{ id: proof.id, changedPaths, checkedSubjects, completenessBasis: proof.completenessBasis.trim() }];
+      })
+    : [];
+  return { applied, rejected, resolutionProofs, found: true };
 }
 
 interface Role {
@@ -710,6 +767,8 @@ export async function validateLoop(
         ? `${parsedReply.protocolFailure?.kind ?? "contract-mismatch"}: ${parsedReply.protocolFailure?.message ?? "The required findings block could not be read."}`
         : parsedReply.missingAssessments.length > 0
           ? `missing-assessments: omitted checkpoint assessments for ${parsedReply.missingAssessments.join(", ")}`
+          : parsedReply.missingClassAnalyses.length > 0
+            ? `missing-class-analysis: omitted root-cause coverage for ${parsedReply.missingClassAnalyses.join(", ")}`
           : "";
       if (finalProtocolError === "") {
         criticReply = parsedReply;
@@ -853,6 +912,8 @@ export async function validateLoop(
             checkpointAssessments: criticReply.checkpointAssessments,
             criticSummary: criticSummary.text,
             criticLogs,
+            classAnalyses: criticReply.classAnalyses,
+            criteriaPatches: criticReply.criteriaPatches,
           },
           options.now,
         );
@@ -899,7 +960,7 @@ export async function validateLoop(
     const writerResult = await runAgent({
       command: writer.agent.command,
       args: writer.agent.args,
-      prompt: composeWriterBrief(sources, fresh, context),
+      prompt: composeWriterBrief(sources, fresh, context, criticReply.classAnalyses),
       promptMode: writer.agent.promptMode,
       cwd: root,
     });
@@ -922,6 +983,15 @@ export async function validateLoop(
       return aborted(
         options.programId,
         `Writer agent (${writer.label}) returned no verdict block matching the contract, so which findings it applied or declined could not be read. Inspect the working tree before re-running — the specs may already have been edited. Output tail: ${tail(writerResult.output, 800)}`,
+        { rounds, strict, findings: [...seen.values()], criticLogs },
+      );
+    }
+    const provedIds = new Set(verdict.resolutionProofs.map(({ id }) => id));
+    const unproved = verdict.applied.filter((id) => !provedIds.has(id));
+    if (unproved.length > 0) {
+      return aborted(
+        options.programId,
+        `Writer agent (${writer.label}) marked findings applied without class-wide resolution proof: ${unproved.join(", ")}.`,
         { rounds, strict, findings: [...seen.values()], criticLogs },
       );
     }

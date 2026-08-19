@@ -30,10 +30,24 @@ exists, this is a replan rather than an isolated new planning session. Read:
 - every `relatedFindings` entry and `checkpointAssessments` entry so the new
   plan does not preserve a known interface, coverage, dependency, or test
   defect merely because it was not itself marked `requiresReplan`;
+- every `classAnalyses` entry. Treat its `checkedSubjects` as a closure
+  obligation: inspect the whole set, repair every `affectedSubjects` member,
+  and fix the stated root cause rather than only the example that triggered
+  the report;
+- `criteriaPatches`, applying only entries explicitly classified as
+  intent-preserving clarifications. Any other success-criteria or user-intent
+  change requires a human decision;
 - the existing program document and manifest;
 - every task file referenced by the existing manifest;
 - the current git status and the actual source files cited by the report's
-  evidence.
+evidence.
+
+For each blocker or major finding, record enough evidence in the final summary
+to show which analogous subjects were checked and why the set is exhaustive.
+If a criterion names a conceptual family of commands, routes, schemas, or
+interfaces, derive the complete set from the repository's canonical registry,
+union, manifest collection, or the criterion's explicit list. Never fix one
+counterexample and leave equivalent members for the next replan.
 
 Plan from the repository state that exists now, not from the original
 pre-program design. A workstream marked complete is baseline only when its
@@ -238,10 +252,11 @@ Do not create workstream specs in this workflow, and do not offer to. Specs
 are written by the packaged runner, one clean agent per workstream:
 
 ```sh
-npx --yes @wildorder/program-pipeline author "{program-id}"
+npx --yes @wildorder/program-pipeline run "{program-id}"
 ```
 
-Point the user at that command and stop. Authoring a spec inside this session
+The run begins with an independent `plan-audit` before authoring. Point the
+user at that command and stop. Authoring a spec inside this session
 would write it in a context already carrying the whole planning conversation,
 compose its own instructions, and then grade its own output — which is what
 the command exists to prevent.

@@ -109,8 +109,9 @@ describe("auditPlan", () => {
       })}\n\`\`\`` }),
     });
     expect(result.result).toBe("REQUIRES_REPLAN");
-    const report = JSON.parse(await readFile(result.replanReport!, "utf8")) as { schemaVersion: number; classAnalyses: unknown[]; planningInstruction: string };
-    expect(report.schemaVersion).toBe(2);
+    const report = JSON.parse(await readFile(result.replanReport!, "utf8")) as { schemaVersion: number; inputHash: string; classAnalyses: unknown[]; planningInstruction: string };
+    expect(report.schemaVersion).toBe(3);
+    expect(report.inputHash).toMatch(/^[a-f0-9]{64}$/u);
     expect(report.classAnalyses).toHaveLength(1);
     expect(report.planningInstruction).toContain("root-cause class");
   });

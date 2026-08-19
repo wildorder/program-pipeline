@@ -323,7 +323,7 @@ describe("runProgram", () => {
           await writeFile(join(root, "docs", "programs", "alpha-program.md"), "# Alpha\n\nReplanned against the public API.\n", "utf8");
           return {
             exitCode: 0,
-            output: `\`\`\`json\n{"resolutionProofs":[{"subject":"SC-01","changedPaths":["docs/programs/alpha-program.md"],"checkedSubjects":["public API"],"completenessBasis":"complete exported API"}]}\n\`\`\`\n\`\`\`summary\nClosed the class. REPLAN_COMPLETE\n\`\`\``,
+            output: `\`\`\`json\n{"resolutionProofs":[{"subject":"SC-01","changedPaths":["docs/programs/alpha-program.md"],"dispositions":[{"subject":"public API","disposition":"fixed","evidence":[{"path":"docs/programs/alpha-program.md","detail":"reconciled against the exported API"}]}],"completenessBasis":"complete exported API"}]}\n\`\`\`\n\`\`\`summary\nClosed the class. REPLAN_COMPLETE\n\`\`\``,
           };
         }
         if (invocation.prompt.includes("# Author the workstream spec")) {
@@ -602,8 +602,8 @@ describe("runProgram", () => {
       "validate",
       "converge",
     ]);
-    // One critic call plus one bounded automatic-replanner attempt; build is
-    // never invoked while the checkpoint remains unsafe.
-    expect(agentCalls).toBe(2);
+    // One critic call plus two bounded transactional replanner attempts; build
+    // is never invoked while the checkpoint remains unsafe.
+    expect(agentCalls).toBe(3);
   });
 });

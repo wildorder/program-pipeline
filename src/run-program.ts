@@ -362,7 +362,7 @@ export async function runProgram(
       if (result.result === "REQUIRES_REPLAN" && result.replanReport) {
         const depth = options.automaticReplans ?? 0;
         if (depth < 2) {
-          progress(`automatic replan ${depth + 1}/2: repairing plan before authoring`);
+          progress(`automatic replan cycle ${depth + 1}/2: repairing plan before authoring`);
           const replanned = await replanProgram({
             cwd: root,
             programId: options.programId,
@@ -410,7 +410,7 @@ export async function runProgram(
       if (result.result === "REQUIRES_REPLAN") {
         const depth = options.automaticReplans ?? 0;
         if (depth < 2 && result.replanReport) {
-          progress(`automatic replan ${depth + 1}/2: updating plan artifacts`);
+          progress(`automatic replan cycle ${depth + 1}/2: updating plan artifacts`);
           try {
             const replanned = await replanProgram({
               cwd: root,
@@ -500,7 +500,7 @@ export async function runProgram(
         }
         const depth = options.automaticReplans ?? 0;
         if (depth < 2 && result.replanReport) {
-          progress(`automatic replan ${depth + 1}/2: updating plan artifacts`);
+          progress(`automatic replan cycle ${depth + 1}/2: updating plan artifacts`);
           let replanned;
           try {
             replanned = await replanProgram({

@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { replanProgram } from "../src/replan-program.js";
+import { replanInputHash } from "../src/replan-report.js";
+import { loadPipelineConfig } from "../src/pipeline-config.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -20,25 +22,155 @@ async function fixture(criteriaPatches: unknown[] = []): Promise<string> {
 }
 
 const proof = `\`\`\`json
-{"resolutionProofs":[{"subject":"SC-01","changedPaths":["docs/programs/alpha-program.md"],"checkedSubjects":["a","b"],"completenessBasis":"complete registry"}]}
+{"resolutionProofs":[{"subject":"SC-01","changedPaths":["docs/programs/alpha-program.md"],"dispositions":[{"subject":"a","disposition":"fixed","evidence":[{"path":"docs/programs/alpha-program.md","detail":"corrected the canonical rule"}]},{"subject":"b","disposition":"already-correct","evidence":[{"path":"src/b.ts:10","detail":"already implements the corrected rule"}]}],"completenessBasis":"complete registry"}]}
 \`\`\`
 \`\`\`summary
 Closed the complete class. REPLAN_COMPLETE
 \`\`\``;
 
 describe("replanProgram", () => {
+  it("refuses a report whose hashed canonical inputs have drifted", async () => {
+    const root = await fixture();
+    const reportPath = join(root, "docs", "programs", "alpha-replan.json");
+    const report = JSON.parse(await readFile(reportPath, "utf8")) as Record<string, unknown>;
+    report.inputHash = await replanInputHash(root, "alpha", await loadPipelineConfig(root));
+    await writeFile(reportPath, JSON.stringify(report), "utf8");
+    await writeFile(join(root, "docs", "programs", "alpha-program.md"), "# Alpha\nhuman edit\n", "utf8");
+    let calls = 0;
+    const result = await replanProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        calls += 1;
+        return { exitCode: 0, output: proof };
+      },
+    });
+    expect(result.result).toBe("ABORTED");
+    expect(result.reason).toContain("report is stale");
+    expect(calls).toBe(0);
+    await expect(readFile(join(root, "docs", "programs", "alpha-program.md"), "utf8"))
+      .resolves.toBe("# Alpha\nhuman edit\n");
+  });
+
   it("requires a class-wide resolution proof", async () => {
     const root = await fixture();
+    let calls = 0;
+    const result = await replanProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        calls += 1;
+        await writeFile(join(root, "docs", "programs", "alpha-program.md"), "# Alpha\nnew plan\n", "utf8");
+        const manifestPath = join(root, "docs", "programs", "alpha-manifest.json");
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { program: { planGeneration: string } };
+        manifest.program.planGeneration = "rejected-generation";
+        await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+        return { exitCode: 0, output: "```summary\nREPLAN_COMPLETE\n```" };
+      },
+    });
+    expect(result.result).toBe("FAILED");
+    expect(result.reason).toContain("resolutionProofs");
+    expect(calls).toBe(2);
+    await expect(readFile(join(root, "docs", "programs", "alpha-program.md"), "utf8"))
+      .resolves.toBe("# Alpha\nold plan\n");
+    const restoredManifest = JSON.parse(await readFile(join(root, "docs", "programs", "alpha-manifest.json"), "utf8")) as { program: { planGeneration: string } };
+    expect(restoredManifest.program.planGeneration).toBe("g1");
+    const report = JSON.parse(await readFile(join(root, "docs", "programs", "alpha-replan.json"), "utf8")) as {
+      schemaVersion: number;
+      lastAttempt: { outcome: string; reason: string; failedSubjects: string[]; artifactsLeftOnDisk: boolean };
+      attemptHistory: unknown[];
+    };
+    expect(report.schemaVersion).toBe(3);
+    expect(report.lastAttempt).toMatchObject({
+      outcome: "rejected",
+      artifactsLeftOnDisk: false,
+    });
+    expect(report.lastAttempt.reason).toContain("resolutionProofs");
+    expect(report.attemptHistory).toHaveLength(2);
+  });
+
+  it("rolls back a rejected first attempt and feeds every proof defect into attempt two", async () => {
+    const root = await fixture();
+    let calls = 0;
+    const prompts: string[] = [];
+    const result = await replanProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        calls += 1;
+        prompts.push(invocation.prompt);
+        const programPath = join(root, "docs", "programs", "alpha-program.md");
+        if (calls === 2) {
+          await expect(readFile(programPath, "utf8")).resolves.toBe("# Alpha\nold plan\n");
+        }
+        await writeFile(programPath, "# Alpha\nnew plan\n", "utf8");
+        return calls === 1
+          ? { exitCode: 0, output: "```summary\nREPLAN_COMPLETE\n```" }
+          : { exitCode: 0, output: proof };
+      },
+    });
+    expect(result.result).toBe("COMPLETE");
+    expect(calls).toBe(2);
+    expect(prompts[1]).toContain("previous attempt was rejected and rolled back");
+    expect(prompts[1]).toContain("no resolutionProofs contract");
+    const report = JSON.parse(await readFile(join(root, "docs", "programs", "alpha-replan.json"), "utf8")) as {
+      lastAttempt: { outcome: string };
+      attemptHistory: Array<{ outcome: string }>;
+    };
+    expect(report.lastAttempt.outcome).toBe("accepted");
+    expect(report.attemptHistory.map(({ outcome }) => outcome)).toEqual(["rejected", "accepted"]);
+  });
+
+  it("reports all class members missing dispositions in one rejection", async () => {
+    const root = await fixture();
+    const partial = `\`\`\`json
+{"resolutionProofs":[{"subject":"SC-01","changedPaths":["docs/programs/alpha-program.md"],"dispositions":[{"subject":"a","disposition":"fixed","evidence":[{"path":"docs/programs/alpha-program.md","detail":"fixed a"}]}],"completenessBasis":"registry"}]}
+\`\`\`
+\`\`\`summary
+REPLAN_COMPLETE
+\`\`\``;
     const result = await replanProgram({
       cwd: root,
       programId: "alpha",
       agentRunner: async () => {
         await writeFile(join(root, "docs", "programs", "alpha-program.md"), "# Alpha\nnew plan\n", "utf8");
-        return { exitCode: 0, output: "```summary\nREPLAN_COMPLETE\n```" };
+        return { exitCode: 0, output: partial };
       },
     });
     expect(result.result).toBe("FAILED");
-    expect(result.reason).toContain("resolution proof");
+    expect(result.reason).toContain("missing/duplicate: b");
+    const report = JSON.parse(await readFile(join(root, "docs", "programs", "alpha-replan.json"), "utf8")) as {
+      lastAttempt: { failedSubjects: string[]; resolutionProofs: unknown[] };
+    };
+    expect(report.lastAttempt.failedSubjects).toEqual(["SC-01"]);
+    expect(report.lastAttempt.resolutionProofs).toHaveLength(1);
+  });
+
+  it("reports every subject with a missing proof in one verdict", async () => {
+    const root = await fixture();
+    const reportPath = join(root, "docs", "programs", "alpha-replan.json");
+    const report = JSON.parse(await readFile(reportPath, "utf8")) as {
+      replanFindings: Array<Record<string, unknown>>;
+      relatedFindings: Array<Record<string, unknown>>;
+      classAnalyses: Array<Record<string, unknown>>;
+    };
+    const second = { ...report.replanFindings[0], id: "f2", subject: "SC-02" };
+    report.replanFindings.push(second);
+    report.relatedFindings.push(second);
+    report.classAnalyses.push({ subject: "SC-02", scope: "systemic", rootCause: "second mismatch", affectedSubjects: ["c"], checkedSubjects: ["c", "d"], completenessBasis: "second registry" });
+    await writeFile(reportPath, JSON.stringify(report), "utf8");
+    const result = await replanProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        await writeFile(join(root, "docs", "programs", "alpha-program.md"), "# Alpha\nnew plan\n", "utf8");
+        return { exitCode: 0, output: "```json\n{\"resolutionProofs\":[]}\n```\n```summary\nREPLAN_COMPLETE\n```" };
+      },
+    });
+    expect(result.reason).toContain("SC-01");
+    expect(result.reason).toContain("SC-02");
+    const persisted = JSON.parse(await readFile(reportPath, "utf8")) as { lastAttempt: { failedSubjects: string[] } };
+    expect(persisted.lastAttempt.failedSubjects).toEqual(["SC-01", "SC-02"]);
   });
 
   it("accepts an exact intent-preserving criterion patch with closure proof", async () => {

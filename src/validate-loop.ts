@@ -309,18 +309,20 @@ function coerceClassAnalyses(raw: unknown): ClassAnalysis[] {
         ? [...new Set(value.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean))]
         : [];
     const checkedSubjects = list(record.checkedSubjects);
+    const affectedSubjects = list(record.affectedSubjects);
     if (
       typeof record.subject !== "string" || record.subject.trim() === "" ||
       (record.scope !== "isolated" && record.scope !== "systemic") ||
       typeof record.rootCause !== "string" || record.rootCause.trim() === "" ||
       checkedSubjects.length === 0 ||
+      affectedSubjects.some((subject) => !checkedSubjects.includes(subject)) ||
       typeof record.completenessBasis !== "string" || record.completenessBasis.trim() === ""
     ) return [];
     return [{
       subject: record.subject.trim(),
       scope: record.scope,
       rootCause: record.rootCause.trim(),
-      affectedSubjects: list(record.affectedSubjects),
+      affectedSubjects,
       checkedSubjects,
       completenessBasis: record.completenessBasis.trim(),
     }];

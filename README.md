@@ -642,6 +642,26 @@ fresh planning session with `/plan-program {program-id}`; the skill detects the
 report automatically, inspects the partially executed repository, and replaces
 the plan from the current baseline using new workstream IDs and task paths.
 
+Automatic replanning is transactional. Before each agent attempt, the runner
+captures the canonical program and manifest. A process failure, malformed
+reply, forbidden criteria change, incomplete class proof, or unreadable
+artifact restores both files before anything else runs; a rejected generation
+never becomes canonical. The rejection is written into the replan report as
+`lastAttempt` and retained in bounded `attemptHistory`, including every failed
+subject, the parsed proof payload, and whether artifacts remain on disk. A
+second attempt starts from the restored baseline with the complete first
+rejection in its prompt.
+
+Resolution proofs are per member, not token-presence checks. Every
+`classAnalyses.checkedSubjects` member needs exactly one `fixed` or
+`already-correct` disposition with concrete evidence, and every
+`affectedSubjects` member must be `fixed`. The critic and planner must include
+all canonical copies—program and manifest criteria, architecture prose, and
+relevant `workstreams[].scope` entries—so a corrected rule cannot remain stale
+in the only copy an author agent receives. Reports use a real SHA-256 hash even
+when referenced task specs have not been authored; missing specs contribute an
+explicit missing marker instead of degrading the hash to a placeholder.
+
 Critic responses are protocol-checked. If JSON is missing, malformed, has the
 wrong contract, or omits checkpoint assessments, the same critic gets one
 correction-only retry without repeating the review. Every original and retry

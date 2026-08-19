@@ -25,6 +25,11 @@ When a program ID is supplied, check for
 `docs/programs/{program-id}-replan.json` before drafting anything. If it
 exists, this is a replan rather than an isolated new planning session. Read:
 
+- `lastAttempt` first when present. When its outcome is `rejected`, the attempt
+  was rolled back, so its edits are not canonical; treat every `failedSubjects`
+  entry as the priority closure set and use `reason` to avoid repeating the
+  rejected proof or consistency defect. Read `attemptHistory` for earlier
+  retry failures from the same handoff;
 - the complete replan report, treating every `replanFindings` entry as a
   mandatory structural defect to resolve;
 - every `relatedFindings` entry and `checkpointAssessments` entry so the new
@@ -42,12 +47,22 @@ exists, this is a replan rather than an isolated new planning session. Read:
 - the current git status and the actual source files cited by the report's
 evidence.
 
-For each blocker or major finding, record enough evidence in the final summary
-to show which analogous subjects were checked and why the set is exhaustive.
+For each blocker or major finding, add a reconciliation table to the program
+document naming every `classAnalyses.checkedSubjects` member, its disposition
+(`fixed` or `already-correct`), and concrete file/line or artifact evidence.
+Every `affectedSubjects` member must be `fixed`. Evidence only in the chat
+summary does not count: the durable artifacts are the review surface.
 If a criterion names a conceptual family of commands, routes, schemas, or
 interfaces, derive the complete set from the repository's canonical registry,
 union, manifest collection, or the criterion's explicit list. Never fix one
 counterexample and leave equivalent members for the next replan.
+
+For every criterion or interface repair, reconcile all canonical copies: the
+program criterion, manifest criterion, architecture/design prose, and every
+relevant `workstreams[].scope.includes/excludes` entry. Search for superseded
+phrasing after the edit and explain any intentional remaining occurrence.
+Resolve conditional members such as "only if one exists" against the actual
+repository before placing them in an asserted-equal set.
 
 Plan from the repository state that exists now, not from the original
 pre-program design. A workstream marked complete is baseline only when its

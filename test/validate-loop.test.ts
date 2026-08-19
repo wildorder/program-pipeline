@@ -613,7 +613,7 @@ describe("convergence loop", () => {
       await readFile(result.replanReport!, "utf8"),
     ) as Record<string, unknown>;
     expect(report).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       programId: "alpha",
       outcome: "requires-replan",
       checkpointAssessments: [

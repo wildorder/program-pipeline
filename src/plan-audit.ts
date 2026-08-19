@@ -100,6 +100,7 @@ function parseClassAnalyses(value: unknown): PlanClassAnalysis[] {
       (record.scope !== "isolated" && record.scope !== "systemic") ||
       typeof record.rootCause !== "string" || record.rootCause.trim() === "" ||
       checkedSubjects.length === 0 ||
+      affectedSubjects.some((subject) => !checkedSubjects.includes(subject)) ||
       typeof record.completenessBasis !== "string" || record.completenessBasis.trim() === ""
     ) return [];
     return [{
@@ -152,6 +153,15 @@ For every blocker or major finding, classify it as isolated or systemic and
 provide a class analysis with the same subject. checkedSubjects is everything
 you inspected; affectedSubjects is the complete subset that needs repair;
 completenessBasis explains why no parallel instance was omitted.
+
+When a criterion, interface, roster, or rule is repeated, checkedSubjects must
+include every canonical copy: program criterion text, manifest criterion text,
+architecture/design prose, and relevant workstreams[].scope entries, plus the
+runtime implementations. A scope entry is not secondary prose: it is often the
+only copy an author agent sees. Resolve conditional set members against the
+repository; an "only if one exists" member cannot belong to an asserted-equal
+set. Distinguish a reconciled disposition from a token merely appearing in a
+narrative resolution paragraph.
 
 Assess every success criterion exactly once: ${criterionIds.join(", ") || "(none)"}.
 Each assessment must name the concrete commands/interfaces/paths checked and

@@ -128,10 +128,13 @@ export {
 export {
   REPLAN_REPORT_VERSION,
   clearReplanReport,
+  replanInputHash,
   replanReportPath,
   replanHistoryDir,
   writeReplanReport,
   type ReplanReport,
+  type ReplanAttempt,
+  type ReplanResolutionProof,
 } from "./replan-report.js";
 export {
   LEGACY_PLAN_GENERATION,

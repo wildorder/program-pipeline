@@ -179,6 +179,13 @@ set in this round. Do not report one counterexample and leave equivalent
 members for a later round. Name the canonical source that makes the checked
 set exhaustive in completenessBasis.
 
+For a repeated criterion, interface, roster, or rule, checkedSubjects includes
+every canonical plan copy: program criterion text, manifest criterion text,
+architecture/design prose, and relevant workstreams[].scope entries, plus the
+runtime implementations. The scope copy is mandatory because it may be the
+only copy the workstream author receives. Resolve conditional members against
+the repository before accepting any set declared equal.
+
 Return exactly one checkpoint assessment for every workstream in this round:
 ${expectedWorkstreamIds.join(", ") || "(none)"}. An unsafe assessment is a
 structural failure even if the findings array accidentally omits it. Do not

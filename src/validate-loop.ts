@@ -21,6 +21,7 @@ import {
   haltsConvergence,
   identify,
   sortBySeverity,
+  splitCriterionSubjects,
   type Evidence,
   type ClassAnalysis,
   type Finding,
@@ -301,32 +302,40 @@ function coerceEvidence(raw: unknown): Evidence[] {
 
 function coerceClassAnalyses(raw: unknown): ClassAnalysis[] {
   if (!Array.isArray(raw)) return [];
-  return raw.flatMap((item) => {
+  const analyses = raw.flatMap((item) => {
     if (typeof item !== "object" || item === null) return [];
     const record = item as Record<string, unknown>;
     const list = (value: unknown): string[] =>
       Array.isArray(value)
         ? [...new Set(value.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean))]
         : [];
-    const checkedSubjects = list(record.checkedSubjects);
     const affectedSubjects = list(record.affectedSubjects);
+    // Naming a subject as affected is itself the claim it was inspected, so
+    // the affected ⊆ checked invariant is repaired by union, not by rejecting
+    // the analysis — a rejection here surfaces later as a spurious
+    // missing-class-analysis protocol failure.
+    const checkedSubjects = [...new Set([...list(record.checkedSubjects), ...affectedSubjects])];
     if (
       typeof record.subject !== "string" || record.subject.trim() === "" ||
       (record.scope !== "isolated" && record.scope !== "systemic") ||
       typeof record.rootCause !== "string" || record.rootCause.trim() === "" ||
       checkedSubjects.length === 0 ||
-      affectedSubjects.some((subject) => !checkedSubjects.includes(subject)) ||
       typeof record.completenessBasis !== "string" || record.completenessBasis.trim() === ""
     ) return [];
-    return [{
-      subject: record.subject.trim(),
-      scope: record.scope,
-      rootCause: record.rootCause.trim(),
+    return splitCriterionSubjects(record.subject).map((subject) => ({
+      subject,
+      scope: record.scope as "isolated" | "systemic",
+      rootCause: (record.rootCause as string).trim(),
       affectedSubjects,
       checkedSubjects,
-      completenessBasis: record.completenessBasis.trim(),
-    }];
+      completenessBasis: (record.completenessBasis as string).trim(),
+    }));
   });
+  const bySubject = new Map<string, ClassAnalysis>();
+  for (const analysis of analyses) {
+    if (!bySubject.has(analysis.subject)) bySubject.set(analysis.subject, analysis);
+  }
+  return [...bySubject.values()];
 }
 
 export interface CriticReply {
@@ -410,18 +419,23 @@ export function parseCriticReply(
     if (typeof record.subject !== "string" || record.subject.trim() === "") {
       continue;
     }
-    findings.push({
-      severity,
-      category,
-      subject: record.subject.trim(),
-      message:
-        typeof record.message === "string" ? record.message : record.subject,
-      evidence: coerceEvidence(record.evidence),
-      ...(typeof record.workstreamId === "string"
-        ? { workstreamId: record.workstreamId }
-        : {}),
-      ...(record.requiresReplan === true ? { requiresReplan: true } : {}),
-    });
+    // A compound criterion subject is split deterministically rather than
+    // rejected: the correction it used to demand ("one finding per SC-id,
+    // repeat the shared root cause") is a mechanical transformation.
+    for (const subject of splitCriterionSubjects(record.subject)) {
+      findings.push({
+        severity,
+        category,
+        subject,
+        message:
+          typeof record.message === "string" ? record.message : subject,
+        evidence: coerceEvidence(record.evidence),
+        ...(typeof record.workstreamId === "string"
+          ? { workstreamId: record.workstreamId }
+          : {}),
+        ...(record.requiresReplan === true ? { requiresReplan: true } : {}),
+      });
+    }
   }
   const assessmentById = new Map<string, CheckpointAssessment>();
   const classAnalyses = coerceClassAnalyses(parsedRecord.classAnalyses);

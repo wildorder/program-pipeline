@@ -111,6 +111,52 @@ describe("extractJson block selection", () => {
     expect(parseCriticReply('```json\n{"notes":[]}\n```').found).toBe(false);
   });
 
+  it("repairs affectedSubjects missing from checkedSubjects by union instead of dropping the analysis", () => {
+    const reply = parseCriticReply(`\`\`\`json\n${JSON.stringify({
+      findings: [{
+        severity: "major",
+        category: "acceptance-criteria",
+        subject: "SC-01",
+        message: "conflict",
+        evidence: [{ kind: "concern", named: "mismatch" }],
+      }],
+      classAnalyses: [{
+        subject: "SC-01",
+        scope: "systemic",
+        rootCause: "shared contract mismatch",
+        affectedSubjects: ["command a"],
+        checkedSubjects: ["command b"],
+        completenessBasis: "complete registry",
+      }],
+    })}\n\`\`\``);
+    expect(reply.classAnalyses).toHaveLength(1);
+    expect(reply.classAnalyses[0]?.checkedSubjects).toEqual(["command b", "command a"]);
+    expect(reply.missingClassAnalyses).toEqual([]);
+  });
+
+  it("splits compound criterion subjects into one finding and analysis per SC-id", () => {
+    const reply = parseCriticReply(`\`\`\`json\n${JSON.stringify({
+      findings: [{
+        severity: "blocker",
+        category: "acceptance-criteria",
+        subject: "SC-05/SC-06",
+        message: "shared defect",
+        evidence: [{ kind: "concern", named: "mismatch" }],
+      }],
+      classAnalyses: [{
+        subject: "SC-05 / SC-06",
+        scope: "systemic",
+        rootCause: "one root cause spans both criteria",
+        affectedSubjects: ["registry"],
+        checkedSubjects: ["registry"],
+        completenessBasis: "complete surface list",
+      }],
+    })}\n\`\`\``);
+    expect(reply.findings.map(({ subject }) => subject)).toEqual(["SC-05", "SC-06"]);
+    expect(reply.classAnalyses.map(({ subject }) => subject)).toEqual(["SC-05", "SC-06"]);
+    expect(reply.missingClassAnalyses).toEqual([]);
+  });
+
   it("diagnoses missing, malformed, and contract-mismatched JSON", () => {
     expect(parseCriticReply("Looks good to me!").protocolFailure).toMatchObject({
       kind: "missing-json",

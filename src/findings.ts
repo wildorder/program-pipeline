@@ -97,6 +97,21 @@ export function identify(finding: Finding): IdentifiedFinding {
   return { ...finding, id: fingerprint(finding) };
 }
 
+const COMPOUND_CRITERION_SUBJECT = /^SC-\d+(?:\s*[/,+&]\s*SC-\d+)+$/u;
+
+/**
+ * Critics recurrently merge criteria that share a root cause into one subject
+ * ("SC-05/SC-06"). The repair is a deterministic split — one subject per
+ * SC-id — so it happens here rather than by burning a correction retry on a
+ * transformation code can perform. A non-compound subject passes through as a
+ * one-element list.
+ */
+export function splitCriterionSubjects(subject: string): string[] {
+  const trimmed = subject.trim();
+  if (!COMPOUND_CRITERION_SUBJECT.test(trimmed)) return [trimmed];
+  return [...new Set(trimmed.split(/\s*[/,+&]\s*/u))];
+}
+
 /** Collapse incidental spelling differences without merging distinct subjects. */
 function normalizeSubject(subject: string): string {
   return subject

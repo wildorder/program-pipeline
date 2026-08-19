@@ -8,7 +8,7 @@ import {
   type AgentRunner,
 } from "./agent-runner.js";
 import { summaryContract } from "./agent-summary.js";
-import { identify, haltsConvergence, type ClassAnalysis, type IdentifiedFinding } from "./findings.js";
+import { identify, haltsConvergence, splitCriterionSubjects, type ClassAnalysis, type IdentifiedFinding } from "./findings.js";
 import { loadPipelineConfig } from "./pipeline-config.js";
 import { writeReplanReport } from "./replan-report.js";
 import { parseExecutionMode, type ExecutionMode } from "./execution-mode.js";
@@ -66,9 +66,6 @@ const strings = (value: unknown): string[] =>
     ? [...new Set(value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean))]
     : [];
 
-const isCompoundCriterionSubject = (subject: string): boolean =>
-  /^SC-\d+(?:\s*[/,+&]\s*SC-\d+)+$/u.test(subject.trim());
-
 function parseAssessments(value: unknown): CriterionAssessment[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => {
@@ -118,32 +115,35 @@ function parseClassAnalyses(value: unknown): {
       ? subject
       : `entry ${index + 1}`;
     const affectedSubjects = strings(record.affectedSubjects);
-    const checkedSubjects = strings(record.checkedSubjects);
+    // Naming a subject as affected is itself the claim it was inspected, so
+    // the affected ⊆ checked invariant is repaired by union rather than by
+    // demanding a correction retry the model performs mechanically anyway.
+    const checkedSubjects = [...new Set([...strings(record.checkedSubjects), ...affectedSubjects])];
     const entryErrors: string[] = [];
     if (!subject) entryErrors.push("subject must be a non-empty string");
     if (record.scope !== "isolated" && record.scope !== "systemic") entryErrors.push("scope must be isolated or systemic");
     if (!rootCause) entryErrors.push("rootCause must be non-empty");
     if (checkedSubjects.length === 0) entryErrors.push("checkedSubjects must contain at least one member");
-    const uncheckedAffected = affectedSubjects.filter((subject) => !checkedSubjects.includes(subject));
-    if (uncheckedAffected.length > 0) entryErrors.push(`affectedSubjects absent from checkedSubjects: ${uncheckedAffected.join(", ")}`);
     if (!completenessBasis) entryErrors.push("completenessBasis must be non-empty");
     if (entryErrors.length > 0) {
       errors.push(`classAnalyses[${label}]: ${entryErrors.join("; ")}`);
       continue;
     }
-    analyses.push({
-      subject,
-      scope: record.scope as "isolated" | "systemic",
-      rootCause,
-      affectedSubjects,
-      checkedSubjects,
-      completenessBasis,
-    });
+    // A compound subject ("SC-05/SC-06") splits into one analysis per SC-id;
+    // duplicates keep the first occurrence so a split copy never collides
+    // with a dedicated entry.
+    for (const splitSubject of splitCriterionSubjects(subject)) {
+      if (analyses.some((analysis) => analysis.subject === splitSubject)) continue;
+      analyses.push({
+        subject: splitSubject,
+        scope: record.scope as "isolated" | "systemic",
+        rootCause,
+        affectedSubjects,
+        checkedSubjects,
+        completenessBasis,
+      });
+    }
   }
-  const counts = new Map<string, number>();
-  for (const { subject } of analyses) counts.set(subject, (counts.get(subject) ?? 0) + 1);
-  const duplicates = [...counts].filter(([, count]) => count > 1).map(([subject]) => subject);
-  if (duplicates.length > 0) errors.push(`classAnalyses contains duplicate subjects: ${duplicates.join(", ")}`);
   return { analyses, errors };
 }
 
@@ -206,17 +206,11 @@ function parseAuditContract(
   if (requireModeAssessment && !modeAssessment) errors.push(`modeAssessment missing or malformed for ${executionMode}`);
   else if (requireModeAssessment && modeAssessment?.mode !== executionMode) errors.push(`modeAssessment.mode must be ${executionMode}, received ${modeAssessment?.mode ?? "missing"}`);
 
+  // parseCriticReply splits compound criterion subjects ("SC-05/SC-06") into
+  // one finding per SC-id, so every subject below is already canonical.
   const reply = parseCriticReply(output);
   if (!reply.found) {
     errors.push(`findings contract unreadable: ${reply.protocolFailure?.message ?? "unknown protocol failure"}`);
-  }
-  const rawFindings = Array.isArray(record.findings) ? record.findings : [];
-  for (const [index, item] of rawFindings.entries()) {
-    if (typeof item !== "object" || item === null) continue;
-    const subject = (item as Record<string, unknown>).subject;
-    if (typeof subject === "string" && isCompoundCriterionSubject(subject)) {
-      errors.push(`findings[${index + 1}].subject "${subject}": compound criterion subjects are invalid; emit one finding per SC-id, and give every SC-id assessed as conflict its own matching classAnalyses entry`);
-    }
   }
 
   const parsedAnalyses = parseClassAnalyses(record.classAnalyses);
@@ -224,10 +218,7 @@ function parseAuditContract(
   const analyzed = new Set(parsedAnalyses.analyses.map(({ subject }) => subject));
   const conflicts = criterionAssessments.filter(({ status }) => status === "conflict");
   const requiredAnalysis = new Set([
-    ...reply.findings
-      .filter(haltsConvergence)
-      .map(({ subject }) => subject)
-      .filter((subject) => !isCompoundCriterionSubject(subject)),
+    ...reply.findings.filter(haltsConvergence).map(({ subject }) => subject),
     ...conflicts.map(({ criterionId }) => criterionId),
   ]);
   const missingAnalysis = [...requiredAnalysis].filter((subject) => !analyzed.has(subject));
@@ -257,11 +248,8 @@ ${errors.map((error) => `- ${error}`).join("\n")}
 
 Requirements:
 - Preserve the original semantic judgment.
-- Use exactly one SC-id as the subject of a criterion finding; never combine SC ids with slashes, commas, plus signs, or conjunctions.
-- If one defect affects multiple criteria, emit one finding per affected SC-id. Repeat the shared root cause and evidence when necessary; do not collapse the criteria to one canonical subject.
 - Every criterion assessed as conflict has its own classAnalyses entry whose subject is that criterionId, even when another criterion has the same root cause.
-- Every blocker/major subject has exactly one classAnalyses entry with the same subject.
-- Every affectedSubjects member also appears in checkedSubjects.
+- Every blocker/major subject has a classAnalyses entry with the same subject.
 - Return every criterion assessment exactly once.
 
 Previous response:

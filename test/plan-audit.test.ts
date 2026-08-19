@@ -39,32 +39,28 @@ const assessment = (criterionId: string) => ({
 });
 
 describe("auditPlan", () => {
-  it("uses one correction-only retry for a malformed class analysis", async () => {
+  it("repairs affectedSubjects missing from checkedSubjects by union, without a retry", async () => {
     const root = await fixture();
-    const prompts: string[] = [];
     let calls = 0;
     const finding = { severity: "blocker", category: "acceptance-criteria", subject: "SC-01", message: "The criterion conflicts with the API.", evidence: [{ kind: "concern", named: "signature mismatch" }], requiresReplan: true };
-    const response = (checkedSubjects: string[]) => `\`\`\`json\n${JSON.stringify({
-      criterionAssessments: [assessment("SC-01"), assessment("SC-02")],
-      findings: [finding],
-      classAnalyses: [{ subject: "SC-01", scope: "systemic", rootCause: "signature family mismatch", affectedSubjects: ["command a"], checkedSubjects, completenessBasis: "complete command registry" }],
-      requirementsChangeRequested: false,
-      criteriaPatches: [],
-    })}\n\`\`\``;
     const result = await auditPlan({
       cwd: root,
       programId: "alpha",
-      agentRunner: async (invocation) => {
+      agentRunner: async () => {
         calls += 1;
-        prompts.push(invocation.prompt);
-        return { exitCode: 0, output: response(calls === 1 ? ["command b"] : ["command a", "command b"]) };
+        return { exitCode: 0, output: `\`\`\`json\n${JSON.stringify({
+          criterionAssessments: [assessment("SC-01"), assessment("SC-02")],
+          findings: [finding],
+          classAnalyses: [{ subject: "SC-01", scope: "systemic", rootCause: "signature family mismatch", affectedSubjects: ["command a"], checkedSubjects: ["command b"], completenessBasis: "complete command registry" }],
+          requirementsChangeRequested: false,
+          criteriaPatches: [],
+        })}\n\`\`\`` };
       },
     });
     expect(result.result).toBe("REQUIRES_REPLAN");
-    expect(calls).toBe(2);
-    expect(prompts[1]).toContain("affectedSubjects absent from checkedSubjects: command a");
-    expect(prompts[1]).toContain("Do not re-run the review");
-    expect(result.criticLogs).toHaveLength(2);
+    expect(calls).toBe(1);
+    expect(result.classAnalyses[0]?.checkedSubjects).toEqual(["command b", "command a"]);
+    expect(result.criticLogs).toHaveLength(1);
   });
 
   it("aborts with exact diagnostics and both logs when correction remains malformed", async () => {
@@ -87,12 +83,57 @@ describe("auditPlan", () => {
     });
     expect(result.result).toBe("ABORTED");
     expect(calls).toBe(2);
-    expect(result.reason).toContain("compound criterion subjects are invalid");
+    expect(result.reason).toContain("classAnalyses missing for blocker/major subjects: SC-01, SC-02");
     expect(result.criticLogs).toHaveLength(2);
     await Promise.all(result.criticLogs!.map((path) => expect(readFile(path, "utf8")).resolves.toBe(output)));
   });
 
-  it("requires separate findings and class analyses when one defect conflicts with multiple criteria", async () => {
+  it("splits a compound criterion subject into per-criterion findings and analyses without a retry", async () => {
+    const root = await fixture();
+    let calls = 0;
+    const conflict = (criterionId: string) => ({
+      ...assessment(criterionId),
+      status: "conflict",
+      reason: "the shared contract makes this criterion unsatisfiable",
+    });
+    const result = await auditPlan({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        calls += 1;
+        return {
+          exitCode: 0,
+          output: `\`\`\`json\n${JSON.stringify({
+            criterionAssessments: [conflict("SC-01"), conflict("SC-02")],
+            findings: [{
+              severity: "blocker",
+              category: "acceptance-criteria",
+              subject: "SC-01 / SC-02",
+              message: "The shared contract conflicts with this criterion.",
+              evidence: [{ kind: "concern", named: "shared contract mismatch" }],
+              requiresReplan: true,
+            }],
+            classAnalyses: [{
+              subject: "SC-01/SC-02",
+              scope: "systemic",
+              rootCause: "one shared contract contradicts both criteria",
+              affectedSubjects: ["shared contract"],
+              checkedSubjects: ["shared contract", "all consumers"],
+              completenessBasis: "the complete consumer registry",
+            }],
+            requirementsChangeRequested: false,
+            criteriaPatches: [],
+          })}\n\`\`\``,
+        };
+      },
+    });
+    expect(result.result).toBe("REQUIRES_REPLAN");
+    expect(calls).toBe(1);
+    expect(result.findings.map(({ subject }) => subject)).toEqual(["SC-01", "SC-02"]);
+    expect(result.classAnalyses.map(({ subject }) => subject)).toEqual(["SC-01", "SC-02"]);
+  });
+
+  it("uses one correction-only retry when a conflicting criterion genuinely lacks a class analysis", async () => {
     const root = await fixture();
     const prompts: string[] = [];
     let calls = 0;
@@ -128,9 +169,7 @@ describe("auditPlan", () => {
           exitCode: 0,
           output: `\`\`\`json\n${JSON.stringify({
             criterionAssessments: [conflict("SC-01"), conflict("SC-02")],
-            findings: corrected
-              ? [finding("SC-01"), finding("SC-02")]
-              : [finding("SC-01 / SC-02")],
+            findings: [finding("SC-01"), finding("SC-02")],
             classAnalyses: corrected
               ? [analysis("SC-01"), analysis("SC-02")]
               : [analysis("SC-01")],
@@ -142,9 +181,8 @@ describe("auditPlan", () => {
     });
     expect(result.result).toBe("REQUIRES_REPLAN");
     expect(calls).toBe(2);
-    expect(prompts[1]).toContain("emit one finding per SC-id");
     expect(prompts[1]).toContain("classAnalyses missing for blocker/major subjects: SC-02");
-    expect(prompts[1]).toContain("do not collapse the criteria to one canonical subject");
+    expect(prompts[1]).toContain("Do not re-run the review");
     expect(result.findings.map(({ subject }) => subject)).toEqual(["SC-01", "SC-02"]);
     expect(result.classAnalyses.map(({ subject }) => subject)).toEqual(["SC-01", "SC-02"]);
   });

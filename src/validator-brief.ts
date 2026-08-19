@@ -141,7 +141,17 @@ Reply with one fenced \`\`\`json block and nothing that matters outside it:
     }
   ],
   "requirementsChangeRequested": false,
-  "requirementsChangeReason": "only when a user requirement or success criterion itself must change"
+  "requirementsChangeReason": "only when a user requirement or success criterion itself must change",
+  "criteriaPatches": [
+    {
+      "criterionId": "SC-09",
+      "kind": "clarification" | "substantive",
+      "intentPreserved": true,
+      "before": "current wording",
+      "after": "proposed wording",
+      "reason": "why this preserves or changes intent"
+    }
+  ]
 }
 
 \`\`\`
@@ -159,10 +169,13 @@ judge the repository immediately after that workstream alone.
 
 Set "requirementsChangeRequested" to true only when resolving the critique
 requires changing the user's stated requirements or success criteria. That is
-not an automatic replan: explain the decision in "requirementsChangeReason"
-and do not expect the replanner to edit it. For ordinary structural defects
-(scope, ownership, dependencies, or migration order), leave it false and use
-"requiresReplan" on the affected findings.
+not an automatic replan: explain the decision in "requirementsChangeReason".
+For an intent-preserving clarification, include a "criteriaPatches" entry with
+kind "clarification" and intentPreserved true; the writer may apply it together
+with the related spec and plan repairs. Use kind "substantive" or
+intentPreserved false only when a human requirements decision is truly needed.
+For ordinary structural defects (scope, ownership, dependencies, or migration
+order), leave it false and use "requiresReplan" on the affected findings.
 `.trim();
 }
 
@@ -365,12 +378,12 @@ export function composeWriterBrief(
     "",
     `You are the writer for round ${context.round} of ${context.totalRounds}. A critic reviewed the workstream specs and reported the findings below.`,
     "",
-    "Fix what is genuinely wrong by editing the spec files under `tasks/`. Make precise, minimal edits.",
+    "Fix what is genuinely wrong by editing the affected task specs and, when needed for consistency, the program document and manifest under `docs/programs/`. Make precise, minimal coordinated edits.",
     "",
     "Rules:",
     "",
     "- Do not shorten a spec to reduce its length, and do not delete inlined interfaces, implementation steps, tests, or acceptance criteria. Detail a build agent needs is not bloat.",
-    "- Do not split a workstream and do not edit the manifest. If a finding truly requires that, decline it and say so — it goes back to program planning.",
+    "- Do not split a workstream or change user requirements. You may repair manifest dependencies, task paths, ownership, and program-plan descriptions when the change preserves the declared requirements and keeps the plan coherent.",
     "- You may decline any finding you believe is wrong. Declining is a legitimate outcome and it will be recorded, not overridden. Give a real reason.",
     "- Do not commit.",
     "",

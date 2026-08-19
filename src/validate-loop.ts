@@ -121,6 +121,8 @@ export interface ValidateLoopOptions {
   agentRunner?: AgentRunner;
   onProgress?: (line: string) => void;
   now?: () => Date;
+  /** Explicitly accept unresolved non-blocking semantic findings after the round cap. */
+  allowSemanticRisks?: boolean;
 }
 
 export type CriticProtocolFailureKind =
@@ -308,7 +310,17 @@ export interface CriticReply {
   missingAssessments: string[];
   requirementsChangeRequested: boolean;
   requirementsChangeReason?: string;
+  criteriaPatches: CriteriaPatch[];
   protocolFailure?: CriticProtocolFailure;
+}
+
+export interface CriteriaPatch {
+  criterionId: string;
+  kind: "clarification" | "substantive";
+  intentPreserved: boolean;
+  before: string;
+  after: string;
+  reason: string;
 }
 
 export interface CheckpointAssessment {
@@ -333,6 +345,7 @@ export function parseCriticReply(
       checkpointAssessments: [],
       missingAssessments: [...expectedWorkstreamIds],
       requirementsChangeRequested: false,
+      criteriaPatches: [],
       ...(extraction.failure === undefined
         ? {}
         : { protocolFailure: extraction.failure }),
@@ -347,6 +360,7 @@ export function parseCriticReply(
       checkpointAssessments: [],
       missingAssessments: [...expectedWorkstreamIds],
       requirementsChangeRequested: false,
+      criteriaPatches: [],
     };
   }
   const findings: Finding[] = [];
@@ -373,6 +387,28 @@ export function parseCriticReply(
     });
   }
   const assessmentById = new Map<string, CheckpointAssessment>();
+  const criteriaPatches = Array.isArray(parsedRecord.criteriaPatches)
+    ? parsedRecord.criteriaPatches.flatMap((item) => {
+        if (typeof item !== "object" || item === null) return [];
+        const record = item as Record<string, unknown>;
+        if (
+          typeof record.criterionId !== "string" ||
+          (record.kind !== "clarification" && record.kind !== "substantive") ||
+          typeof record.intentPreserved !== "boolean" ||
+          typeof record.before !== "string" ||
+          typeof record.after !== "string" ||
+          typeof record.reason !== "string"
+        ) return [];
+        return [{
+          criterionId: record.criterionId,
+          kind: record.kind as "clarification" | "substantive",
+          intentPreserved: record.intentPreserved,
+          before: record.before,
+          after: record.after,
+          reason: record.reason,
+        }];
+      })
+    : [];
   if (Array.isArray(parsedRecord.checkpointAssessments)) {
     for (const item of parsedRecord.checkpointAssessments) {
       if (typeof item !== "object" || item === null) continue;
@@ -405,6 +441,7 @@ export function parseCriticReply(
     parsedRecord.requirementsChangeReason.trim() !== ""
       ? { requirementsChangeReason: parsedRecord.requirementsChangeReason.trim() }
       : {}),
+    criteriaPatches,
   };
 }
 
@@ -698,7 +735,13 @@ export async function validateLoop(
       );
     }
 
-    if (criticReply.requirementsChangeRequested) {
+    const substantiveCriteriaChange = criticReply.criteriaPatches.some(
+      (patch) => patch.kind === "substantive" || !patch.intentPreserved,
+    );
+    if (
+      criticReply.requirementsChangeRequested &&
+      (substantiveCriteriaChange || criticReply.criteriaPatches.length === 0)
+    ) {
       const requirementReason =
         criticReply.requirementsChangeReason ??
         "The critic requested a change to user requirements or success criteria.";
@@ -712,6 +755,27 @@ export async function validateLoop(
           findings: [...seen.values()],
           criticLogs,
         },
+      );
+    }
+
+    if (criticReply.criteriaPatches.length > 0 && !substantiveCriteriaChange) {
+      progress(
+        `round ${round}: applying ${criticReply.criteriaPatches.length} intent-preserving criteria clarification(s) through the writer`,
+      );
+      criticReply.findings.push(
+        ...criticReply.criteriaPatches.map((patch) => ({
+          severity: "major" as const,
+          category: "acceptance-criteria" as const,
+          subject: patch.criterionId,
+          message: `${patch.reason} Before: ${patch.before} After: ${patch.after}`,
+          evidence: [
+            {
+              kind: "concern" as const,
+              named: "intent-preserving acceptance-criteria clarification",
+              detail: patch.criterionId,
+            },
+          ],
+        })),
       );
     }
 
@@ -914,10 +978,20 @@ export async function validateLoop(
     ...mechanical.findings.map(identify),
     ...modelFindings,
   ]);
+  const riskWaived =
+    options.allowSemanticRisks === true &&
+    outcome === "cap-reached" &&
+    replanFindings.length === 0 &&
+    ![...unresolved.values()].some(({ severity }) => severity === "blocker");
+  if (riskWaived) {
+    progress(
+      `convergence: accepting ${unresolved.size} unresolved semantic finding(s) as an explicit risk waiver`,
+    );
+  }
   const gateFailed =
     mechanical.result === "FAILED" ||
-    outcome !== "converged" ||
-    unresolved.size > 0;
+    (outcome !== "converged" && !riskWaived) ||
+    (unresolved.size > 0 && !riskWaived);
 
   let convergenceReceipt: string | undefined;
   if (!gateFailed) {
@@ -926,6 +1000,8 @@ export async function validateLoop(
         root,
         options.programId,
         config,
+        options.now,
+        riskWaived ? [...unresolved.keys()] : [],
       );
       convergenceReceipt = receipt.inputHash;
       await clearReplanReport(root, options.programId);

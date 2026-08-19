@@ -11,6 +11,8 @@ export interface ConvergenceReceipt {
   programId: string;
   inputHash: string;
   validatedAt: string;
+  /** Finding IDs explicitly accepted after the semantic round cap. */
+  waivedFindings?: string[];
 }
 
 export interface ConvergenceReceiptStatus {
@@ -164,6 +166,7 @@ export async function writeConvergenceReceipt(
   programId: string,
   config: PipelineConfig,
   now: () => Date = () => new Date(),
+  waivedFindings: string[] = [],
 ): Promise<ConvergenceReceipt> {
   const status = await inspectConvergenceReceipt(root, programId, config);
   if (status.valid && status.receipt) return status.receipt;
@@ -172,6 +175,7 @@ export async function writeConvergenceReceipt(
     programId,
     inputHash: status.expectedHash,
     validatedAt: now().toISOString(),
+    ...(waivedFindings.length === 0 ? {} : { waivedFindings }),
   };
   await atomicWriteText(status.path, `${JSON.stringify(receipt, null, 2)}\n`);
   return receipt;

@@ -462,6 +462,11 @@ program
   )
   .option("--to <stage>", "Stop after this stage", parseStage)
   .option("--review", "Include the advisory architecture review", false)
+  .option(
+    "--accept-semantic-risks",
+    "Proceed after convergence cap with unresolved non-blocking findings; record a waiver",
+    false,
+  )
   .option("--no-commit", "Do not commit between stages")
   .option("--json", "Print a machine-readable report", false)
   .action(
@@ -472,6 +477,7 @@ program
         from?: RunStage;
         to?: RunStage;
         review: boolean;
+        acceptSemanticRisks: boolean;
         commit: boolean;
         json: boolean;
       },
@@ -482,6 +488,7 @@ program
         ...(options.from === undefined ? {} : { from: options.from }),
         ...(options.to === undefined ? {} : { to: options.to }),
         review: options.review,
+        allowSemanticRisks: options.acceptSemanticRisks,
         // Commander defaults --no-commit's value to true, so only an explicit
         // false is an override.
         ...(options.commit === false ? { commit: false } : {}),

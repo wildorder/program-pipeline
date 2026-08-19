@@ -85,6 +85,8 @@ export interface RunProgramOptions {
   onProgress?: (line: string) => void;
   /** Internal bounded automatic replan depth. */
   automaticReplans?: number;
+  /** Allow non-blocking semantic findings after convergence exhausts its rounds. */
+  allowSemanticRisks?: boolean;
 }
 
 export function parseStage(value: string): RunStage {
@@ -381,6 +383,9 @@ export async function runProgram(
         ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
         ...(options.now ? { now: options.now } : {}),
         onProgress: progress,
+        ...(options.allowSemanticRisks === undefined
+          ? {}
+          : { allowSemanticRisks: options.allowSemanticRisks }),
       });
       await record(
         stage,

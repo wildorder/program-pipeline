@@ -84,6 +84,31 @@ Resolve these values from the arguments or ask for anything missing:
 
 Wait for the user's response when questions are required.
 
+### Select the execution mode
+
+Choose the mode before decomposing the work and record the decision in both
+artifacts. Default to `atomic` unless there is positive causal evidence that
+orchestration is necessary.
+
+- **`atomic`** — one cohesive agent working set, one implementation brief, and
+  one green commit. Choose this when a capable coding agent can own the whole
+  change coherently and intermediate deployable checkpoints add no material
+  safety or parallelism. Approximate size near a configured token band is not
+  a reason to reject atomic mode.
+- **`orchestrated`** — multiple independently-green workstreams executed as a
+  dependency graph. Choose this when the minimum static context physically
+  cannot fit one agent session, independent work provides material parallelism,
+  independently deployable service boundaries matter, or a shared-contract
+  migration requires expand -> migrate consumers -> contract/delete ordering.
+
+Do not choose orchestrated merely because the feature is important, spans many
+files, or has a high estimated token count. State the concrete evidence in
+`program.executionModeReason`. In atomic mode create exactly one workstream
+covering the entire program, with no dependencies and task file
+`tasks/{program-id}/implementation.md`; the entire program is its one
+independently-green checkpoint. In orchestrated mode use the decomposition and
+checkpoint rules below.
+
 ## 3. Draft the program document
 
 Inspect `docs/programs/` for an existing `*-program.md`. Match its structure when one exists. Otherwise use:
@@ -94,6 +119,10 @@ Inspect `docs/programs/` for an existing `*-program.md`. Match its structure whe
 ## Program Overview
 **Product:** [From the vision.]
 **Program scope:** [What this program delivers.]
+
+## Execution Mode
+**Mode:** atomic | orchestrated
+**Reason:** [Concrete causal evidence for the choice.]
 
 ## Strategic Goals
 [Three to five outcome-focused bullets.]
@@ -147,7 +176,9 @@ If `docs/programs/` contains an existing `*-manifest.json`, match its schema exa
     "name": "{Program Name}",
     "description": "{one-line description}",
     "status": "planning",
-    "created": "{YYYY-MM-DD}"
+    "created": "{YYYY-MM-DD}",
+    "executionMode": "atomic|orchestrated",
+    "executionModeReason": "{concrete causal evidence}"
   },
   "technology": {},
   "successCriteria": [
@@ -187,6 +218,11 @@ Keep the manifest, program document, replan report, and every referenced
 canonical artifacts); a plan that exists only in an ignored working tree is
 not reproducible on CI or another machine.
 
+For `atomic`, the `workstreams` array contains exactly one whole-program
+workstream (`WS-01`) whose `taskFile` is
+`tasks/{program-id}/implementation.md`. For `orchestrated`, it contains the
+dependency graph described in the program document.
+
 ### Scope is load-bearing, not decoration
 
 `scope` is required. `program-pipeline author` refuses to run without a
@@ -214,7 +250,7 @@ workstream:
   neighbors might reasonably assume it handles something, say that it does
   not.
 
-### Every workstream is an independently green checkpoint
+### Every orchestrated workstream is an independently green checkpoint
 
 Design the roster so that, starting from a green repository containing only
 its declared dependencies, each workstream can finish with every configured
@@ -231,6 +267,9 @@ For a shared contract migration, prefer an explicit sequence:
 The destructive cleanup depends on every migration workstream. Do not place
 foundational deletion first merely because it is conceptually central.
 
+For atomic mode, the whole program is the checkpoint; do not invent internal
+workstreams solely to manufacture intermediate gates.
+
 Execution size is a separate concern from checkpoint safety. Read
 `build.executionProfile` from `pipeline.config.json` when present. Treat its
 target, caution, and hard working-set values as broad risk bands, not precise
@@ -244,7 +283,8 @@ estimate after specifications name concrete files.
 ## 5. Hand off for review
 
 Both files now exist on disk. Reply with a short summary only — program
-scope in a sentence, workstream count, critical path, and links to the two
+scope in a sentence, selected execution mode and reason, workstream count,
+critical path, and links to the two
 file paths — and invite the user to review the files and request changes.
 Apply any requested edits to the files in place.
 

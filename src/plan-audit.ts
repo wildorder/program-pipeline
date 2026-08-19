@@ -10,6 +10,7 @@ import { summaryContract } from "./agent-summary.js";
 import { identify, haltsConvergence, type ClassAnalysis, type IdentifiedFinding } from "./findings.js";
 import { loadPipelineConfig } from "./pipeline-config.js";
 import { writeReplanReport } from "./replan-report.js";
+import { parseExecutionMode, type ExecutionMode } from "./execution-mode.js";
 import {
   extractJson,
   parseCriticReply,
@@ -26,6 +27,13 @@ export interface CriterionAssessment {
   completenessBasis: string;
 }
 
+export interface ModeAssessment {
+  mode: ExecutionMode;
+  status: "appropriate" | "inappropriate";
+  reason: string;
+  evidence: string[];
+}
+
 export interface PlanAuditResult {
   result: "PASSED" | "REQUIRES_REPLAN" | "HUMAN_REQUIRED" | "ABORTED";
   reason?: string;
@@ -34,6 +42,7 @@ export interface PlanAuditResult {
   criterionAssessments: CriterionAssessment[];
   classAnalyses: PlanClassAnalysis[];
   criteriaPatches: CriteriaPatch[];
+  modeAssessment?: ModeAssessment;
   replanReport?: string;
 }
 
@@ -43,6 +52,10 @@ export interface PlanAuditOptions {
   agentRunner?: AgentRunner;
   now?: () => Date;
   onProgress?: (line: string) => void;
+  /** Effective mode, including a CLI override when one was supplied. */
+  executionMode?: ExecutionMode;
+  /** Whether mode fit is part of this audit (false for legacy manifests). */
+  assessExecutionMode?: boolean;
 }
 
 const strings = (value: unknown): string[] =>
@@ -100,9 +113,26 @@ function parseClassAnalyses(value: unknown): PlanClassAnalysis[] {
   });
 }
 
+function parseModeAssessment(value: unknown): ModeAssessment | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  const evidence = strings(record.evidence);
+  if (
+    typeof record.mode !== "string" ||
+    (record.status !== "appropriate" && record.status !== "inappropriate") ||
+    typeof record.reason !== "string" || record.reason.trim() === "" ||
+    evidence.length === 0
+  ) return undefined;
+  let mode: ExecutionMode;
+  try { mode = parseExecutionMode(record.mode); } catch { return undefined; }
+  return { mode, status: record.status, reason: record.reason.trim(), evidence };
+}
+
 function brief(
   programId: string,
   criterionIds: string[],
+  executionMode: ExecutionMode,
+  requireModeAssessment: boolean,
   documents: Array<{ label: string; content: string }>,
 ): string {
   return `# Audit the executable plan for ${programId}
@@ -131,6 +161,17 @@ when the current plan cannot implement it against the actual repository.
 Use requirementsChangeRequested only for a genuine user-intent decision. An
 intent-preserving wording repair belongs in criteriaPatches as a clarification.
 
+The selected execution mode is ${executionMode}. ${requireModeAssessment
+    ? `Assess whether that mode fits the causal structure of this plan. Atomic is
+appropriate only when the whole change is one cohesive agent working set and
+one green checkpoint. Orchestrated requires positive evidence such as a
+physically impossible single context, necessary parallel independent work,
+independently deployable boundaries, or an expand -> migrate -> contract
+migration. Approximate token estimates near a threshold are advisory and are
+not evidence by themselves. Mark an ill-fitting mode inappropriate.`
+    : `This is a legacy manifest with no declared mode; preserve its compatible
+orchestrated routing and do not grade mode selection in this audit.`}
+
 ## Output
 
 Reply with one fenced JSON object:
@@ -142,6 +183,10 @@ Reply with one fenced JSON object:
     "reason": "source-grounded conclusion", "checkedSubjects": ["command A"],
     "completenessBasis": "registry or explicit list used to close the set"
   }],
+  ${requireModeAssessment ? `"modeAssessment": {
+    "mode": "${executionMode}", "status": "appropriate" | "inappropriate",
+    "reason": "causal conclusion", "evidence": ["specific plan/repository evidence"]
+  },` : ""}
   "findings": [{
     "severity": "blocker" | "major" | "minor", "category": "acceptance-criteria",
     "subject": "SC-01", "message": "complete defect", "evidence": [
@@ -179,7 +224,21 @@ export async function auditPlan(options: PlanAuditOptions): Promise<PlanAuditRes
   } catch (error) {
     return { result: "ABORTED", reason: error instanceof Error ? error.message : String(error), findings: [], criterionAssessments: [], classAnalyses: [], criteriaPatches: [] };
   }
-  const parsedManifest = JSON.parse(manifest) as { successCriteria?: Array<{ id?: unknown }> };
+  const parsedManifest = JSON.parse(manifest) as {
+    program?: { executionMode?: unknown };
+    successCriteria?: Array<{ id?: unknown }>;
+  };
+  let declaredMode: ExecutionMode | undefined;
+  if (typeof parsedManifest.program?.executionMode === "string") {
+    try {
+      declaredMode = parseExecutionMode(parsedManifest.program.executionMode);
+    } catch (error) {
+      return { result: "ABORTED", reason: error instanceof Error ? error.message : String(error), findings: [], criterionAssessments: [], classAnalyses: [], criteriaPatches: [] };
+    }
+  }
+  const executionMode = options.executionMode ?? declaredMode ?? "orchestrated";
+  const requireModeAssessment = options.assessExecutionMode ??
+    (options.executionMode !== undefined || declaredMode !== undefined);
   const criterionIds = (parsedManifest.successCriteria ?? []).flatMap(({ id }) => typeof id === "string" ? [id] : []);
   const documents = [{ label: "Program document", content: program }, { label: "Manifest", content: manifest }];
   for (const path of ["AGENTS.md", config.visionPath, ...config.contextDocs]) {
@@ -187,11 +246,15 @@ export async function auditPlan(options: PlanAuditOptions): Promise<PlanAuditRes
   }
   const label = describeAgent(agent);
   progress(`plan critic: ${label}`);
-  const result = await (options.agentRunner ?? defaultAgentRunner)({ command: agent.command, args: agent.args, prompt: brief(options.programId, criterionIds, documents), promptMode: agent.promptMode, cwd: root });
+  const result = await (options.agentRunner ?? defaultAgentRunner)({ command: agent.command, args: agent.args, prompt: brief(options.programId, criterionIds, executionMode, requireModeAssessment, documents), promptMode: agent.promptMode, cwd: root });
   if (result.inputError || result.exitCode !== 0) return { result: "ABORTED", reason: `Plan critic failed: ${result.inputError ?? result.output.slice(-1000)}`, agent: label, findings: [], criterionAssessments: [], classAnalyses: [], criteriaPatches: [] };
   const raw = extractJson(result.output, (value) => typeof value === "object" && value !== null && Array.isArray((value as Record<string, unknown>).criterionAssessments) && Array.isArray((value as Record<string, unknown>).findings));
   if (typeof raw !== "object" || raw === null) return { result: "ABORTED", reason: "Plan critic response did not match the required criterion-assessment contract.", agent: label, findings: [], criterionAssessments: [], classAnalyses: [], criteriaPatches: [] };
   const record = raw as Record<string, unknown>;
+  const modeAssessment = parseModeAssessment(record.modeAssessment);
+  if (requireModeAssessment && (!modeAssessment || modeAssessment.mode !== executionMode)) {
+    return { result: "ABORTED", reason: `Plan critic omitted the required ${executionMode} mode assessment.`, agent: label, findings: [], criterionAssessments: [], classAnalyses: [], criteriaPatches: [] };
+  }
   const criterionAssessments = parseAssessments(record.criterionAssessments);
   const assessmentIds = new Set(criterionAssessments.map(({ criterionId }) => criterionId));
   const missing = criterionIds.filter((id) => !assessmentIds.has(id));
@@ -199,8 +262,17 @@ export async function auditPlan(options: PlanAuditOptions): Promise<PlanAuditRes
   if (missing.length > 0 || extra.length > 0 || criterionAssessments.length !== criterionIds.length) return { result: "ABORTED", reason: `Plan critic criterion coverage is incomplete (missing: ${missing.join(", ") || "none"}; unexpected/duplicate: ${extra.join(", ") || "none"}).`, agent: label, findings: [], criterionAssessments, classAnalyses: [], criteriaPatches: [] };
   const reply = parseCriticReply(result.output);
   const conflicts = criterionAssessments.filter(({ status }) => status === "conflict");
+  const modeFinding = modeAssessment?.status === "inappropriate" ? {
+    severity: "blocker" as const,
+    category: "scope-structure" as const,
+    subject: "execution mode",
+    message: modeAssessment.reason,
+    evidence: modeAssessment.evidence.map((detail) => ({ kind: "concern" as const, named: "execution mode mismatch", detail })),
+    requiresReplan: true,
+  } : undefined;
   const findings = [
     ...reply.findings,
+    ...(modeFinding ? [modeFinding] : []),
     ...conflicts
       .filter(({ criterionId }) => !reply.findings.some(({ subject }) => subject === criterionId))
       .map(({ criterionId, reason }) => ({
@@ -213,13 +285,23 @@ export async function auditPlan(options: PlanAuditOptions): Promise<PlanAuditRes
       })),
   ].map(identify);
   const classAnalyses = parseClassAnalyses(record.classAnalyses);
+  if (modeFinding && !classAnalyses.some(({ subject }) => subject === "execution mode")) {
+    classAnalyses.push({
+      subject: "execution mode",
+      scope: "isolated",
+      rootCause: modeAssessment?.reason ?? "selected execution mode does not fit the plan",
+      affectedSubjects: [executionMode],
+      checkedSubjects: modeAssessment?.evidence ?? [executionMode],
+      completenessBasis: "the plan's complete execution topology and checkpoint structure",
+    });
+  }
   const analyzed = new Set(classAnalyses.map(({ subject }) => subject));
   const missingAnalysis = findings.filter(haltsConvergence).filter(({ subject }) => !analyzed.has(subject));
   if (missingAnalysis.length > 0) return { result: "ABORTED", reason: `Plan critic omitted class-wide analysis for: ${missingAnalysis.map(({ subject }) => subject).join(", ")}.`, agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches };
   const substantive = reply.requirementsChangeRequested && (reply.criteriaPatches.length === 0 || reply.criteriaPatches.some((patch) => patch.kind === "substantive" || !patch.intentPreserved));
   if (substantive) return { result: "HUMAN_REQUIRED", reason: reply.requirementsChangeReason ?? "The plan audit found a genuine requirements decision.", agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches };
   const blocking = findings.filter(haltsConvergence);
-  if (conflicts.length === 0 && blocking.length === 0) return { result: "PASSED", agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches };
+  if (conflicts.length === 0 && blocking.length === 0) return { result: "PASSED", agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, ...(modeAssessment ? { modeAssessment } : {}) };
   const written = await writeReplanReport(root, options.programId, config, { summary: `Plan audit found ${blocking.length} blocker/major finding(s) before authoring.`, replanFindings: blocking, relatedFindings: findings, checkpointAssessments: [], criticSummary: conflicts.map(({ criterionId, reason }) => `${criterionId}: ${reason}`).join("; "), criticLogs: [], classAnalyses, criteriaPatches: reply.criteriaPatches }, options.now);
-  return { result: "REQUIRES_REPLAN", reason: `Plan audit found ${blocking.length} blocker/major finding(s) before authoring.`, agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, replanReport: written.path };
+  return { result: "REQUIRES_REPLAN", reason: `Plan audit found ${blocking.length} blocker/major finding(s) before authoring.`, agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, ...(modeAssessment ? { modeAssessment } : {}), replanReport: written.path };
 }

@@ -50,6 +50,39 @@ describe("auditPlan", () => {
     expect(result.criterionAssessments).toHaveLength(2);
   });
 
+  it("requires and returns a causal assessment for a declared mode", async () => {
+    const root = await fixture();
+    const manifestPath = join(root, "docs", "programs", "alpha-manifest.json");
+    const value = JSON.parse(await readFile(manifestPath, "utf8")) as { program: Record<string, unknown> };
+    value.program.executionMode = "atomic";
+    value.program.executionModeReason = "one cohesive working set";
+    await writeFile(manifestPath, JSON.stringify(value), "utf8");
+    let prompt = "";
+    const result = await auditPlan({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        prompt = invocation.prompt;
+        return { exitCode: 0, output: `\`\`\`json\n${JSON.stringify({ criterionAssessments: [assessment("SC-01"), assessment("SC-02")], modeAssessment: { mode: "atomic", status: "appropriate", reason: "the feature is one cohesive green checkpoint", evidence: ["one workstream owns the complete change"] }, findings: [], classAnalyses: [], requirementsChangeRequested: false, criteriaPatches: [] })}\n\`\`\`` };
+      },
+    });
+    expect(result.result).toBe("PASSED");
+    expect(result.modeAssessment?.mode).toBe("atomic");
+    expect(prompt).toContain("token estimates near a threshold are advisory");
+  });
+
+  it("sends an inappropriate selected mode back to replanning", async () => {
+    const root = await fixture();
+    const result = await auditPlan({
+      cwd: root,
+      programId: "alpha",
+      executionMode: "atomic",
+      agentRunner: async () => ({ exitCode: 0, output: `\`\`\`json\n${JSON.stringify({ criterionAssessments: [assessment("SC-01"), assessment("SC-02")], modeAssessment: { mode: "atomic", status: "inappropriate", reason: "a destructive contract migration requires staged checkpoints", evidence: ["expand, two consumer migrations, then delete"] }, findings: [], classAnalyses: [], requirementsChangeRequested: false, criteriaPatches: [] })}\n\`\`\`` }),
+    });
+    expect(result.result).toBe("REQUIRES_REPLAN");
+    expect(result.findings).toEqual(expect.arrayContaining([expect.objectContaining({ subject: "execution mode", requiresReplan: true })]));
+  });
+
   it("fails closed when the critic omits a success criterion", async () => {
     const root = await fixture();
     const result = await auditPlan({

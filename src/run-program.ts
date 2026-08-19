@@ -11,6 +11,10 @@ import { validateLoop } from "./validate-loop.js";
 import { validateWorkstreams } from "./validate.js";
 import { replanProgram } from "./replan-program.js";
 import { auditPlan } from "./plan-audit.js";
+import {
+  readProgramExecutionMode,
+  type ExecutionMode,
+} from "./execution-mode.js";
 
 /**
  * Run the whole pipeline: one command from a planned program to a built one.
@@ -66,6 +70,7 @@ export type RunOutcome = "COMPLETE" | "STOPPED" | "FAILED";
 
 export interface RunProgramResult {
   programId: string;
+  executionMode?: ExecutionMode;
   result: RunOutcome;
   reason?: string;
   stages: RunStageResult[];
@@ -90,6 +95,8 @@ export interface RunProgramOptions {
   automaticReplans?: number;
   /** Allow non-blocking semantic findings after convergence exhausts its rounds. */
   allowSemanticRisks?: boolean;
+  /** Override the planner-selected execution mode for this run. */
+  executionMode?: ExecutionMode;
 }
 
 export function parseStage(value: string): RunStage {
@@ -192,12 +199,16 @@ export async function runProgram(
   const root = resolve(options.cwd);
   const progress = options.onProgress ?? ((): void => {});
   const stages: RunStageResult[] = [];
+  let effectiveMode: ExecutionMode | undefined;
+  let assessExecutionMode: boolean;
+  let manifestMode: ExecutionMode | undefined;
 
   const finish = (
     result: RunOutcome,
     reason?: string,
   ): RunProgramResult => ({
     programId: options.programId,
+    ...(effectiveMode === undefined ? {} : { executionMode: effectiveMode }),
     result,
     ...(reason === undefined ? {} : { reason }),
     stages,
@@ -208,6 +219,25 @@ export async function runProgram(
     config = await loadPipelineConfig(root);
   } catch (error) {
     return finish("FAILED", error instanceof Error ? error.message : String(error));
+  }
+
+  let modeSource: "override" | "manifest" | "legacy";
+  try {
+    const plannedMode = await readProgramExecutionMode(root, options.programId);
+    manifestMode = plannedMode.mode;
+    effectiveMode = options.executionMode ?? plannedMode.mode;
+    modeSource = options.executionMode !== undefined
+      ? "override"
+      : plannedMode.declared ? "manifest" : "legacy";
+    assessExecutionMode = options.executionMode !== undefined || plannedMode.declared;
+    if (effectiveMode === "atomic" && plannedMode.workstreamCount !== 1) {
+      return finish(
+        "FAILED",
+        `Atomic mode requires exactly one whole-program workstream, but the manifest has ${plannedMode.workstreamCount}. Re-plan this program as atomic or run it as orchestrated.`,
+      );
+    }
+  } catch (error) {
+    return finish("FAILED", `Could not resolve execution mode: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   const planned = stagesFor({
@@ -238,11 +268,15 @@ export async function runProgram(
         }`,
       );
     }
-    if (!receipt.valid) {
+    const overrideChangesRouting = options.executionMode !== undefined &&
+      options.executionMode !== manifestMode;
+    if (!receipt.valid || overrideChangesRouting) {
       const buildIndex = planned.indexOf("build");
       planned.splice(buildIndex, 0, "validate", "converge");
       progress(
-        `semantic convergence receipt is ${receipt.reason ?? "invalid"}; automatically running validate and converge before build`,
+        overrideChangesRouting
+          ? "execution-mode override changes semantic routing; automatically running validate and converge before build"
+          : `semantic convergence receipt is ${receipt.reason ?? "invalid"}; automatically running validate and converge before build`,
       );
     }
   }
@@ -270,6 +304,7 @@ export async function runProgram(
     }
   }
 
+  progress(`execution mode: ${effectiveMode} (${modeSource})`);
   progress(`run ${options.programId}: ${planned.join(" -> ")}`);
 
   const record = async (
@@ -315,6 +350,8 @@ export async function runProgram(
         programId: options.programId,
         ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
         ...(options.now ? { now: options.now } : {}),
+        executionMode: effectiveMode,
+        assessExecutionMode,
         onProgress: progress,
       });
       await record(stage, result.result, result.reason);
@@ -437,7 +474,8 @@ export async function runProgram(
         ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
         ...(options.now ? { now: options.now } : {}),
         onProgress: progress,
-        ...(options.allowSemanticRisks === undefined
+        ...(effectiveMode === "atomic" ? { rounds: 1, allowSemanticRisks: true } : {}),
+        ...(effectiveMode === "atomic" || options.allowSemanticRisks === undefined
           ? {}
           : { allowSemanticRisks: options.allowSemanticRisks }),
       });

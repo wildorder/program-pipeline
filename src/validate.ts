@@ -58,7 +58,11 @@ export interface ValidationReport {
 }
 
 interface Manifest {
-  program: { id: string };
+  program: {
+    id: string;
+    executionMode?: "atomic" | "orchestrated";
+    executionModeReason?: string;
+  };
   successCriteria: Array<{ id: string; description: string }>;
   packages?: Array<{ name: string; path: string }>;
   workstreams: Array<{
@@ -204,6 +208,34 @@ export async function validateWorkstreams(
           `${manifest.program.id} != ${programId}`,
         ),
       ],
+    });
+  }
+
+  if (
+    manifest.program.executionMode !== undefined &&
+    !manifest.program.executionModeReason?.trim()
+  ) {
+    findings.push({
+      severity: "blocker",
+      category: "manifest",
+      code: "execution-mode-reason-missing",
+      subject: "execution mode",
+      message: "An explicit executionMode requires a non-empty executionModeReason.",
+      evidence: [because("planner did not record why this execution mode fits", manifest.program.executionMode)],
+    });
+  }
+
+  if (
+    manifest.program.executionMode === "atomic" &&
+    manifest.workstreams.length !== 1
+  ) {
+    findings.push({
+      severity: "blocker",
+      category: "scope-structure",
+      code: "atomic-workstream-count",
+      subject: "execution mode",
+      message: `Atomic mode requires exactly one whole-program workstream; the manifest has ${manifest.workstreams.length}.`,
+      evidence: [because("atomic execution is one agent working set and one independently-green checkpoint", String(manifest.workstreams.length))],
     });
   }
 

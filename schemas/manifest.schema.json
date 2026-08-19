@@ -16,7 +16,9 @@
         "description": { "type": "string" },
         "status": { "enum": ["planning", "in_progress", "complete", "failed"] },
         "created": { "type": "string" },
-        "planGeneration": { "type": "string", "minLength": 1 }
+        "planGeneration": { "type": "string", "minLength": 1 },
+        "executionMode": { "enum": ["atomic", "orchestrated"] },
+        "executionModeReason": { "type": "string", "minLength": 1 }
       }
     },
     "successCriteria": {

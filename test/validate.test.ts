@@ -158,6 +158,31 @@ Prose mentioning \`src/other.ts\` is also fine.`,
     expect(report.result).toBe("PASSED");
   });
 
+  it("accepts legacy manifests without a mode", async () => {
+    const root = await fixture(
+      manifest([{ id: "WS-01", name: "Core", taskFile: "tasks/alpha/ws-01.md", status: "not_started", dependencies: [], packages: ["app"] }]),
+      { "tasks/alpha/ws-01.md": validSpec },
+    );
+    await expect(validateWorkstreams(root, "alpha")).resolves.toMatchObject({ result: "PASSED" });
+  });
+
+  it("requires one whole-program workstream and a reason for atomic mode", async () => {
+    const value = manifest([
+      { id: "WS-01", name: "One", taskFile: "tasks/alpha/ws-01.md", status: "not_started", dependencies: [], packages: ["app"] },
+      { id: "WS-02", name: "Two", taskFile: "tasks/alpha/ws-02.md", status: "not_started", dependencies: [], packages: [] },
+    ]);
+    value.program = { id: "alpha", name: "Alpha", status: "planning", executionMode: "atomic" };
+    const root = await fixture(value, {
+      "tasks/alpha/ws-01.md": validSpec,
+      "tasks/alpha/ws-02.md": validSpec.replaceAll("WS-01", "WS-02"),
+    });
+    const report = await validateWorkstreams(root, "alpha");
+    expect(report.findings.map(({ code }) => code)).toEqual(expect.arrayContaining([
+      "execution-mode-reason-missing",
+      "atomic-workstream-count",
+    ]));
+  });
+
   it("accepts an annotated file entry whose explanatory note wraps", async () => {
     const spec = validSpec.replace(
       "## Files Touched\n- (NEW) `src/core.ts`",

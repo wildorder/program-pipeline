@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { reviewCriteria } from "../src/criteria.js";
+import { fingerprint } from "../src/findings.js";
 import {
   parseStage,
   runProgram,
@@ -131,6 +132,18 @@ const refuse = async (): Promise<never> => {
   throw new Error("no agent should have been spawned");
 };
 
+async function setMode(root: string, mode: "atomic" | "orchestrated"): Promise<void> {
+  const path = join(root, "docs", "programs", "alpha-manifest.json");
+  const value = JSON.parse(await readFile(path, "utf8")) as {
+    program: Record<string, unknown>;
+  };
+  value.program.executionMode = mode;
+  value.program.executionModeReason = mode === "atomic"
+    ? "one cohesive working set and green checkpoint"
+    : "checkpoint graph is required";
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
 describe("parseStage", () => {
   it("accepts every declared stage and rejects anything else", () => {
     expect(parseStage("plan-audit")).toBe("plan-audit");
@@ -198,6 +211,87 @@ describe("stagesFor", () => {
 });
 
 describe("runProgram", () => {
+  it("uses one semantic round for a planner-selected atomic program", async () => {
+    const root = await fixture({ git: false });
+    await setMode(root, "atomic");
+    const prompts: string[] = [];
+    const result = await runProgram({
+      cwd: root,
+      programId: "alpha",
+      from: "converge",
+      to: "converge",
+      commit: false,
+      agentRunner: async (invocation) => {
+        prompts.push(invocation.prompt);
+        return {
+          exitCode: 0,
+          output: `\`\`\`json
+{"checkpointAssessments":[{"workstreamId":"WS-01","status":"safe","reason":"The whole program leaves every configured verification command green."}],"findings":[],"classAnalyses":[],"requirementsChangeRequested":false,"criteriaPatches":[]}
+\`\`\``,
+        };
+      },
+    });
+    expect(result.result).toBe("COMPLETE");
+    expect(result.executionMode).toBe("atomic");
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("round 1 of 1");
+  });
+
+  it("lets atomic mode apply one bounded spec repair without demanding a confirmation round", async () => {
+    const root = await fixture({ git: false });
+    await setMode(root, "atomic");
+    const finding = {
+      severity: "major" as const,
+      category: "test-quality" as const,
+      subject: "Tests case 1",
+      message: "The assertion does not discriminate a wrong implementation.",
+      evidence: [{ kind: "concern" as const, named: "non-discriminating assertion" }],
+      workstreamId: "WS-01",
+      requiresReplan: false,
+    };
+    const id = fingerprint(finding);
+    let calls = 0;
+    const result = await runProgram({
+      cwd: root,
+      programId: "alpha",
+      from: "converge",
+      to: "converge",
+      commit: false,
+      agentRunner: async () => {
+        calls += 1;
+        if (calls === 1) return {
+          exitCode: 0,
+          output: `\`\`\`json\n${JSON.stringify({ checkpointAssessments: [{ workstreamId: "WS-01", status: "safe", reason: "The whole program remains green." }], findings: [finding], classAnalyses: [{ subject: finding.subject, scope: "isolated", rootCause: "one weak assertion", affectedSubjects: ["case 1"], checkedSubjects: ["case 1"], completenessBasis: "the spec has one test case" }], requirementsChangeRequested: false, criteriaPatches: [] })}\n\`\`\``,
+        };
+        return {
+          exitCode: 0,
+          output: `\`\`\`json\n${JSON.stringify({ applied: [id], rejected: [], resolutionProofs: [{ id, changedPaths: ["tasks/alpha/ws-01.md"], checkedSubjects: ["case 1"], completenessBasis: "the spec has one test case" }] })}\n\`\`\``,
+        };
+      },
+    });
+    expect(result.result).toBe("COMPLETE");
+    expect(calls).toBe(2);
+    expect(result.stages[0]?.result).toBe("PASSED");
+  });
+
+  it("refuses to force a multi-workstream manifest through atomic routing", async () => {
+    const root = await fixture({ git: false });
+    const path = join(root, "docs", "programs", "alpha-manifest.json");
+    const value = JSON.parse(await readFile(path, "utf8")) as { workstreams: Array<Record<string, unknown>> };
+    value.workstreams.push({ id: "WS-02", name: "Second", taskFile: "tasks/alpha/ws-02.md", status: "not_started", dependencies: [] });
+    await writeFile(path, JSON.stringify(value), "utf8");
+    const result = await runProgram({
+      cwd: root,
+      programId: "alpha",
+      executionMode: "atomic",
+      commit: false,
+      agentRunner: refuse,
+    });
+    expect(result.result).toBe("FAILED");
+    expect(result.executionMode).toBe("atomic");
+    expect(result.reason).toContain("exactly one whole-program workstream");
+  });
+
   it("re-audits an automatic replan before authoring", async () => {
     const root = await fixture({ git: false });
     const calls: string[] = [];

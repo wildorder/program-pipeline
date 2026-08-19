@@ -74,6 +74,12 @@ Hard rules:
 - Do not edit source code, tests, AGENTS.md, vision, or any file outside the
   program document and manifest.
 - Preserve landed work and preserve superseded task specs as historical files.
+- Preserve the selected execution mode unless the report identifies a mode-fit
+  defect. When it does, switch modes without changing requirements and update
+  program.executionModeReason with the concrete causal evidence. Atomic mode
+  must contain exactly one whole-program workstream; orchestrated mode must
+  justify its checkpoint graph. Approximate token-band estimates alone never
+  force a mode change.
 - Set program.planGeneration to a new unique value.
 - Resolve every blocker/major in both replanFindings and relatedFindings.
 - For every classAnalyses entry, inspect the whole checked set and repair the

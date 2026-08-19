@@ -276,7 +276,23 @@ The whole pipeline, one command.
 npx --yes @wildorder/program-pipeline run phase-1 --cwd .
 npx --yes @wildorder/program-pipeline run phase-1 --from build
 npx --yes @wildorder/program-pipeline run phase-1 --review
+npx --yes @wildorder/program-pipeline run phase-1 --mode orchestrated
 ```
+
+`/plan-program` selects and records one of two execution modes:
+
+- **atomic** uses one whole-program implementation brief, one coding-agent
+  working set, and one verified commit. This is the default when the change is
+  cohesive and intermediate checkpoints add no material safety or parallelism.
+- **orchestrated** uses independently-green workstreams and a dependency graph.
+  It is reserved for causal needs such as necessary parallel work,
+  independently deployable boundaries, a physically impossible single
+  context, or expand → migrate → contract/delete sequencing.
+
+Near-threshold token estimates are advisory and do not choose the mode.
+`--mode atomic|orchestrated` overrides the manifest for a run; forcing atomic
+still requires a manifest containing exactly one whole-program workstream.
+Manifests created before execution modes existed retain orchestrated behavior.
 
 Stages, in order: **plan-audit → author → validate → converge → criteria → build →
 as-built**. Each one commits what it produced, so a completed run leaves a
@@ -318,8 +334,9 @@ normal replan report; automatic replanning is audited again before authoring.
 agent, so the default path to a built program does not pay for it; add
 `--review` when you want the report.
 
-Flags: `--from <stage>` and `--to <stage>` narrow the range, `--no-commit`
-skips the commits, `--json` prints a machine-readable report.
+Flags: `--from <stage>` and `--to <stage>` narrow the range,
+`--mode atomic|orchestrated` overrides routing, `--no-commit` skips the
+commits, and `--json` prints a machine-readable report.
 
 Exit codes: `0` complete, `1` failed, `2` stopped at the criteria gate.
 
@@ -332,7 +349,9 @@ without that, `criteria --approve` would edit the manifest and the very next
 
 ### `author`
 
-Write every workstream spec for a program, one clean agent per workstream.
+Write each declared workstream spec with a clean agent. Atomic programs declare
+one whole-program workstream at `tasks/{program-id}/implementation.md`;
+orchestrated programs use one agent per graph workstream.
 
 ```sh
 npx --yes @wildorder/program-pipeline author phase-1 --cwd . --dry-run

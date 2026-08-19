@@ -16,6 +16,7 @@ import {
   type RunStage,
 } from "./run-program.js";
 import { auditPlan } from "./plan-audit.js";
+import { parseExecutionMode, type ExecutionMode } from "./execution-mode.js";
 import {
   addDevDependencyCommand,
   detectPackageManager,
@@ -462,6 +463,11 @@ program
     parseStage,
   )
   .option("--to <stage>", "Stop after this stage", parseStage)
+  .option(
+    "--mode <mode>",
+    "Override the planned execution mode: atomic or orchestrated",
+    parseExecutionMode,
+  )
   .option("--review", "Include the advisory architecture review", false)
   .option(
     "--accept-semantic-risks",
@@ -478,6 +484,7 @@ program
         from?: RunStage;
         to?: RunStage;
         review: boolean;
+        mode?: ExecutionMode;
         acceptSemanticRisks: boolean;
         commit: boolean;
         json: boolean;
@@ -489,6 +496,7 @@ program
         ...(options.from === undefined ? {} : { from: options.from }),
         ...(options.to === undefined ? {} : { to: options.to }),
         review: options.review,
+        ...(options.mode === undefined ? {} : { executionMode: options.mode }),
         allowSemanticRisks: options.acceptSemanticRisks,
         // Commander defaults --no-commit's value to true, so only an explicit
         // false is an override.

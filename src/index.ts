@@ -50,6 +50,13 @@ export {
   type RunStageResult,
 } from "./run-program.js";
 export {
+  EXECUTION_MODES,
+  parseExecutionMode,
+  readProgramExecutionMode,
+  type ExecutionMode,
+  type ProgramExecutionMode,
+} from "./execution-mode.js";
+export {
   renderReviewReport,
   reportPathFor,
   reviewProgram,

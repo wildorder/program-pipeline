@@ -288,6 +288,30 @@ describe("fitDependencySpecs", () => {
     expect(result.kept).toEqual([]);
     expect(result.demoted).toEqual(["WS-01"]);
   });
+
+  it("never demotes a dependency explicitly requested for reconciliation", () => {
+    const result = fitDependencySpecs(
+      [make("WS-01", 80), make("WS-02", 70), make("WS-03", 60)],
+      140,
+      new Set(["WS-01"]),
+    );
+    expect(result.kept.map(({ id }) => id)).toEqual(["WS-01", "WS-03"]);
+    expect(result.demoted).toEqual(["WS-02"]);
+    expect(result.pinnedOverBudget).toBeUndefined();
+  });
+
+  it("reports when required specs alone exceed the dependency budget", () => {
+    const result = fitDependencySpecs(
+      [make("WS-01", 80), make("WS-02", 70)],
+      100,
+      new Set(["WS-01", "WS-02"]),
+    );
+    expect(result.pinnedOverBudget).toEqual({
+      ids: ["WS-01", "WS-02"],
+      chars: 150,
+      budget: 100,
+    });
+  });
 });
 
 describe("authorWorkstreams", () => {
@@ -443,6 +467,40 @@ describe("authorWorkstreams", () => {
     await expect(
       readFile(join(root, "tasks", "alpha", "ws-01.md"), "utf8"),
     ).resolves.toContain("WS-01");
+  });
+
+  it("does not re-author a completed workstream for a new plan generation", async () => {
+    const root = await fixture({
+      existingSpecs: ["tasks/alpha/ws-01.md"],
+    });
+    const manifestPath = join(root, "docs", "programs", "alpha-manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      program: { planGeneration?: string };
+      workstreams: Array<{ id: string; status: string }>;
+    };
+    manifest.program.planGeneration = "generation-2";
+    const completed = manifest.workstreams.find(({ id }) => id === "WS-01");
+    if (completed) completed.status = "complete";
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    const calls: string[] = [];
+
+    const report = await authorWorkstreams({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        calls.push(targetOf(invocation.prompt).id);
+        return writesSpecs(root)(invocation);
+      },
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    expect(report.outcomes.find(({ id }) => id === "WS-01")).toMatchObject({
+      status: "skipped",
+      reason: "workstream already complete",
+    });
+    expect(calls).not.toContain("WS-01");
+    await expect(readFile(join(root, "tasks", "alpha", "ws-01.md"), "utf8"))
+      .resolves.toContain("EXISTING");
   });
 
   it("authors only the selected workstreams with --only", async () => {
@@ -661,6 +719,62 @@ describe("authorWorkstreams", () => {
     expect(passes).toEqual([1, 2]);
   });
 
+  it("pins an explicitly requested dependency into the reconciliation retry", async () => {
+    const root = await fixture({ author: { maxDependencySpecChars: 2500 } });
+    const attempts: string[] = [];
+    const report = await authorWorkstreams({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        const { id, taskFile } = targetOf(invocation.prompt);
+        if (taskFile) {
+          await writeFile(join(root, taskFile), spec(id, "x".repeat(2000)), "utf8");
+        }
+        if (id === "WS-03") attempts.push(invocation.prompt);
+        const declaration =
+          id === "WS-03" && attempts.length === 1 ? { needs: ["WS-01"] } : {};
+        return {
+          exitCode: 0,
+          output: `\`\`\`json\n${JSON.stringify({ dependencies: [], needs: [], unmet: [], replan: [], ...declaration })}\n\`\`\``,
+        };
+      },
+    });
+
+    expect(report.result).toBe("COMPLETE");
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).not.toContain("### WS-01 —");
+    expect(attempts[1]).toContain("### WS-01 — tasks/alpha/ws-01.md");
+    expect(attempts[1]).toContain(
+      "appear only in the roster above: WS-02",
+    );
+  });
+
+  it("fails before an identical retry when the requested spec cannot fit", async () => {
+    const root = await fixture({ author: { maxDependencySpecChars: 1000 } });
+    let ws03Calls = 0;
+    const report = await authorWorkstreams({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        const { id, taskFile } = targetOf(invocation.prompt);
+        if (id === "WS-03") ws03Calls += 1;
+        if (taskFile) {
+          await writeFile(join(root, taskFile), spec(id, "x".repeat(2000)), "utf8");
+        }
+        const declaration = id === "WS-03" ? { needs: ["WS-01"] } : {};
+        return {
+          exitCode: 0,
+          output: `\`\`\`json\n${JSON.stringify({ dependencies: [], needs: [], unmet: [], replan: [], ...declaration })}\n\`\`\``,
+        };
+      },
+    });
+
+    expect(report.result).toBe("FAILED");
+    expect(ws03Calls).toBe(1);
+    expect(report.reason).toContain("exceeding author.maxDependencySpecChars");
+    expect(report.reason).toContain("Refusing to repeat the author call");
+  });
+
   it("requires a replan when merging the declared edges would cycle", async () => {
     const root = await fixture();
     const report = await authorWorkstreams({
@@ -701,19 +815,25 @@ describe("authorWorkstreams", () => {
     await expect(dependenciesOf(root, "WS-01")).resolves.toEqual(["WS-02"]);
   });
 
-  it("gives up when authors keep asking for specs they already received", async () => {
-    const root = await fixture({ author: { maxReconcilePasses: 2 } });
+  it("stops before another call when an author asks again for a spec it received", async () => {
+    const root = await fixture();
+    let ws01Calls = 0;
+    const delegate = declaringAgent(root, {
+      "WS-01": { needs: ["WS-02"] },
+    });
     const report = await authorWorkstreams({
       cwd: root,
       programId: "alpha",
-      agentRunner: declaringAgent(root, {
-        "WS-01": { needs: ["WS-02"] },
-      }),
+      agentRunner: async (invocation) => {
+        if (targetOf(invocation.prompt).id === "WS-01") ws01Calls += 1;
+        return delegate(invocation);
+      },
     });
 
     expect(report.result).toBe("FAILED");
-    expect(report.reason).toContain("still asked for dependency specs");
-    expect(report.reason).toContain("WS-01");
+    expect(report.reason).toContain("already included in full");
+    expect(report.reason).toContain("WS-01 -> WS-02");
+    expect(ws01Calls).toBe(2);
     expect(report.reconciliation).toHaveLength(2);
   });
 

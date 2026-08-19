@@ -316,29 +316,56 @@ function filesTouchedFormatError(markdown: string): string | undefined {
 }
 
 /**
- * Drop the largest dependency specs until the rest fit the budget. Largest
- * first keeps the most specs in the brief; the dropped ones remain visible as
- * roster entries, so the author can still see they exist and ask for one back
- * through `needs`.
+ * Drop the largest unpinned dependency specs until the rest fit the budget.
+ * Largest first keeps the most specs in the brief. Specs explicitly requested
+ * through `needs` are pinned on the reconciliation pass: retrying without the
+ * requested input would be an expensive no-op.
  */
 export function fitDependencySpecs(
   specs: Array<{ id: string; path: string; content: string }>,
   budget: number,
+  pinnedIds: ReadonlySet<string> = new Set(),
 ): {
   kept: Array<{ id: string; path: string; content: string }>;
   demoted: string[];
+  pinnedOverBudget?: { ids: string[]; chars: number; budget: number };
 } {
   const kept = [...specs];
   const demoted: string[] = [];
+  const pinned = kept.filter(({ id }) => pinnedIds.has(id));
+  const pinnedChars = pinned.reduce(
+    (sum, spec) => sum + spec.content.length,
+    0,
+  );
+  if (pinnedChars > budget) {
+    return {
+      kept: pinned,
+      demoted: kept
+        .filter(({ id }) => !pinnedIds.has(id))
+        .map(({ id }) => id)
+        .sort(),
+      pinnedOverBudget: {
+        ids: pinned.map(({ id }) => id).sort(),
+        chars: pinnedChars,
+        budget,
+      },
+    };
+  }
   const total = (): number =>
     kept.reduce((sum, spec) => sum + spec.content.length, 0);
 
   while (kept.length > 0 && total() > budget) {
-    let largest = 0;
-    for (let index = 1; index < kept.length; index += 1) {
+    let largest = kept.findIndex(({ id }) => !pinnedIds.has(id));
+    if (largest < 0) break;
+    for (let index = largest + 1; index < kept.length; index += 1) {
       const candidate = kept[index];
       const current = kept[largest];
-      if (candidate && current && candidate.content.length > current.content.length) {
+      if (
+        candidate &&
+        current &&
+        !pinnedIds.has(candidate.id) &&
+        candidate.content.length > current.content.length
+      ) {
         largest = index;
       }
     }
@@ -547,12 +574,24 @@ export async function authorWorkstreams(
   const authorOne = async (
     workstream: ManifestWorkstream,
     force: boolean,
+    pinnedNeeds: ReadonlySet<string>,
   ): Promise<AuthorWorkstreamOutcome> => {
     const specPath = resolve(root, workstream.taskFile);
 
     if (!force && (await pathExists(specPath))) {
       const existing = await readFile(specPath, "utf8");
       const existingGeneration = specGeneration(existing);
+      // A completed checkpoint describes code that has already landed. A new
+      // planning generation must not spend another agent call rewriting its
+      // historical spec; replans may only reshape unfinished work.
+      if (workstream.status === "complete") {
+        return {
+          id: workstream.id,
+          status: "skipped",
+          reason: "workstream already complete",
+          declaration: empty,
+        };
+      }
       // Legacy plans predate generation markers. Preserve their existing
       // behavior without dirtying the user's tree; every replan produced by
       // the current planner carries an explicit generation and is strict.
@@ -596,10 +635,43 @@ export async function authorWorkstreams(
         });
       }
     }
-    const { kept, demoted } = fitDependencySpecs(
+    const missingPinned = [...pinnedNeeds].filter(
+      (id) => !dependencySpecs.some((spec) => spec.id === id),
+    );
+    if (missingPinned.length > 0) {
+      const reason = `Required dependency spec(s) are unavailable: ${missingPinned.join(", ")}. Refusing to repeat the author call without the context it requested.`;
+      await emit("dependency-specs-unavailable", {
+        id: workstream.id,
+        required: missingPinned,
+      });
+      progress(`${workstream.id} cannot be re-authored: ${reason}`);
+      return {
+        id: workstream.id,
+        status: "failed",
+        reason,
+        declaration: empty,
+      };
+    }
+    const { kept, demoted, pinnedOverBudget } = fitDependencySpecs(
       dependencySpecs,
       config.author.maxDependencySpecChars,
+      pinnedNeeds,
     );
+    if (pinnedOverBudget) {
+      const reason = `Required dependency spec(s) ${pinnedOverBudget.ids.join(", ")} need ${pinnedOverBudget.chars} characters, exceeding author.maxDependencySpecChars (${pinnedOverBudget.budget}). Refusing to repeat the author call with the same incomplete context.`;
+      await emit("dependency-specs-required-over-budget", {
+        id: workstream.id,
+        ...pinnedOverBudget,
+      });
+      progress(`${workstream.id} cannot be re-authored: ${reason}`);
+      return {
+        id: workstream.id,
+        status: "failed",
+        reason,
+        declaration: empty,
+        demoted,
+      };
+    }
     if (demoted.length > 0) {
       await emit("dependency-specs-demoted", {
         id: workstream.id,
@@ -795,6 +867,7 @@ file. Do not change requirements, implementation scope, or any other section.`;
     selection: Set<string> | undefined,
     force: boolean,
     pass: number,
+    pinnedNeeds: ReadonlyMap<string, ReadonlySet<string>>,
   ): Promise<{
     outcomes: AuthorWorkstreamOutcome[];
     failedLevel?: number;
@@ -827,7 +900,12 @@ file. Do not change requirements, implementation scope, or any other section.`;
         await mapWithConcurrency(
           selected,
           config.author.concurrency,
-          (workstream) => authorOne(workstream, force),
+          (workstream) =>
+            authorOne(
+              workstream,
+              force,
+              pinnedNeeds.get(workstream.id) ?? new Set(),
+            ),
         )
       ).map((outcome) => ({ ...outcome, pass }));
       passOutcomes.push(...levelOutcomes);
@@ -850,6 +928,7 @@ file. Do not change requirements, implementation scope, or any other section.`;
 
   let selection = only;
   let force = options.force ?? false;
+  let pinnedNeeds = new Map<string, ReadonlySet<string>>();
 
   for (let pass = 1; pass <= config.author.maxReconcilePasses; pass += 1) {
     const {
@@ -860,6 +939,7 @@ file. Do not change requirements, implementation scope, or any other section.`;
       selection,
       force,
       pass,
+      pinnedNeeds,
     );
     outcomes.push(...passOutcomes);
 
@@ -1036,6 +1116,33 @@ file. Do not change requirements, implementation scope, or any other section.`;
     });
     if (reauthored.length === 0) break;
 
+    const repeatedNeeds = reconciled.needs.flatMap(
+      ({ workstreamId, dependsOn }) => {
+        const alreadyPinned = pinnedNeeds.get(workstreamId);
+        return dependsOn
+          .filter((id) => alreadyPinned?.has(id))
+          .map((dependsOn) => ({ workstreamId, dependsOn }));
+      },
+    );
+    if (repeatedNeeds.length > 0) {
+      const detail = describeEdges(repeatedNeeds);
+      await emit("author-churn", {
+        pass,
+        reason: "requested dependency was already included",
+        edges: repeatedNeeds,
+      });
+      return {
+        programId: options.programId,
+        result: "FAILED",
+        reason: `Authoring asked again for dependency spec(s) that were already included in full: ${detail}. Refusing another identical agent call; inspect the latest author log or correct the declaration contract.`,
+        agent: agentLabel,
+        levels: currentLevels,
+        outcomes,
+        reconciliation,
+        eventsPath,
+      };
+    }
+
     if (pass === config.author.maxReconcilePasses) {
       await emit("author-churn", { pass, workstreams: reauthored });
       return {
@@ -1054,6 +1161,12 @@ file. Do not change requirements, implementation scope, or any other section.`;
       `pass ${pass}: re-authoring with newly available specs: ${reauthored.join(", ")}`,
     );
     selection = new Set(reauthored);
+    pinnedNeeds = new Map(
+      reconciled.needs.map(({ workstreamId, dependsOn }) => [
+        workstreamId,
+        new Set(dependsOn),
+      ]),
+    );
     force = true;
   }
 

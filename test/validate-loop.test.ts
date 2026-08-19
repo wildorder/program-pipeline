@@ -497,6 +497,47 @@ describe("convergence loop", () => {
     "```",
   ].join("\n");
 
+  it("persists a human-required handoff when the critic requests a requirements decision", async () => {
+    const root = await project();
+    const decision = "Either authorize publication or stop claiming the rung is built.";
+    const reply = [
+      "```json",
+      JSON.stringify({
+        checkpointAssessments: [
+          { workstreamId: "WS-01", status: "safe", reason: "additive change" },
+        ],
+        findings: [],
+        classAnalyses: [],
+        requirementsChangeRequested: true,
+        requirementsChangeReason: decision,
+        criteriaPatches: [],
+      }),
+      "```",
+    ].join("\n");
+    const { runner } = recorder([reply]);
+
+    const result = await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: runner,
+    });
+
+    expect(result.outcome).toBe("aborted");
+    expect(result.result).toBe("FAILED");
+    expect(result.requirementsChangeRequested).toBe(true);
+    expect(result.reason).toContain(decision);
+    expect(result.reason).toContain("/plan-program alpha");
+    expect(result.replanReport).toBeDefined();
+    const report = JSON.parse(await readFile(result.replanReport!, "utf8")) as {
+      outcome: string;
+      humanDecisionReason: string;
+      planningInstruction: string;
+    };
+    expect(report.outcome).toBe("human-required");
+    expect(report.humanDecisionReason).toBe(decision);
+    expect(report.planningInstruction).toContain("human requirements decision");
+  });
+
   it("fails rather than passing when the critic's reply cannot be parsed", async () => {
     const root = await project();
     const unreadable = "I reviewed everything and it looks fine.";
@@ -613,7 +654,7 @@ describe("convergence loop", () => {
       await readFile(result.replanReport!, "utf8"),
     ) as Record<string, unknown>;
     expect(report).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
       programId: "alpha",
       outcome: "requires-replan",
       checkpointAssessments: [

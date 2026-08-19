@@ -23,7 +23,29 @@ Read:
 
 When a program ID is supplied, check for
 `docs/programs/{program-id}-replan.json` before drafting anything. If it
-exists, this is a replan rather than an isolated new planning session. Read:
+exists, this is a replan rather than an isolated new planning session.
+
+#### Human-required decisions come first
+
+When the report's `outcome` is `"human-required"`, the pipeline stopped
+because the critic found one or more genuine user-intent decisions that no
+wording repair can resolve. `humanDecisionReason` states them. Before editing
+any artifact:
+
+1. Present each decision to the user as an explicit either/or choice, quoting
+   the incompatible requirements and citing the relevant findings and
+   `criteriaPatches` from the report.
+2. Wait for the user's answer to every decision. Do not pick a side yourself,
+   and do not proceed with a subset answered.
+3. Record each decision and its rationale in the program document (a short
+   "Requirements Decisions" section is sufficient). The user's recorded
+   decisions are the only authorization for changing success criteria or
+   user intent; apply exactly what was decided, nothing more.
+
+Then continue with the full replan protocol below, treating the report's
+findings and class analyses as the closure obligations they are.
+
+For any report, read:
 
 - `lastAttempt` first when present. When its outcome is `rejected`, the attempt
   was rolled back, so its edits are not canonical; treat every `failedSubjects`

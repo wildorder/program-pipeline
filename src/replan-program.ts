@@ -250,6 +250,13 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
     readFile(programPath, "utf8"),
   ]);
   const parsedReport = JSON.parse(initialReport) as Partial<ReplanReport>;
+  if (parsedReport.outcome === "human-required") {
+    return {
+      result: "ABORTED",
+      reason: `The replan report requires a human requirements decision; automatic replanning is blocked. Run /plan-program ${options.programId} to present the decision and record the user's answer: ${parsedReport.humanDecisionReason ?? "see humanDecisionReason in the report"}`,
+      changedPaths: [],
+    };
+  }
   if (typeof parsedReport.inputHash === "string" && /^[a-f0-9]{64}$/u.test(parsedReport.inputHash)) {
     const currentHash = await replanInputHash(root, options.programId, config);
     if (currentHash !== parsedReport.inputHash) {

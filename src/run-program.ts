@@ -357,7 +357,15 @@ export async function runProgram(
       await record(stage, result.result, result.reason);
       if (result.result === "PASSED") continue;
       if (result.result === "HUMAN_REQUIRED") {
-        return finish("FAILED", `Plan audit requires a human requirements decision: ${result.reason ?? "review the reported conflict"}`);
+        return finish("FAILED", [
+          `Plan audit requires a human requirements decision: ${result.reason ?? "review the reported conflict"}`,
+          ...(result.replanReport
+            ? [
+                `Decision report: ${result.replanReport}`,
+                `Run /plan-program ${options.programId}; it will present these decisions and consume this report.`,
+              ]
+            : []),
+        ].join("\n"));
       }
       if (result.result === "REQUIRES_REPLAN" && result.replanReport) {
         const depth = options.automaticReplans ?? 0;

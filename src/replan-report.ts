@@ -7,7 +7,9 @@ import type { CheckpointAssessment } from "./validate-loop.js";
 import type { CriteriaPatch } from "./validate-loop.js";
 import { atomicWriteText } from "./plan-generation.js";
 
-export const REPLAN_REPORT_VERSION = 3;
+export const REPLAN_REPORT_VERSION = 4;
+
+export type ReplanReportOutcome = "requires-replan" | "human-required";
 
 export interface ReplanResolutionProof {
   subject: string;
@@ -38,8 +40,14 @@ export interface ReplanReport {
   programId: string;
   generatedAt: string;
   inputHash: string;
-  outcome: "requires-replan";
+  outcome: ReplanReportOutcome;
   summary: string;
+  /**
+   * Present only when outcome is "human-required": the genuine user-intent
+   * decision(s) the critic could not resolve. A planner must surface this to
+   * the human and record their answers before changing any requirement.
+   */
+  humanDecisionReason?: string;
   replanFindings: IdentifiedFinding[];
   relatedFindings: IdentifiedFinding[];
   /** Root-cause closure obligations discovered by the plan/spec critic. */
@@ -144,6 +152,8 @@ export async function writeReplanReport(
     criticLogs: string[];
     classAnalyses?: ClassAnalysis[];
     criteriaPatches?: CriteriaPatch[];
+    outcome?: ReplanReportOutcome;
+    humanDecisionReason?: string;
   },
   now: () => Date = () => new Date(),
 ): Promise<{ path: string; report: ReplanReport }> {
@@ -162,13 +172,17 @@ export async function writeReplanReport(
     // No prior report, or it disappeared between access and rename.
   }
   const inputHash = await replanInputHash(root, programId, config);
+  const outcome = input.outcome ?? "requires-replan";
   const report: ReplanReport = {
     schemaVersion: REPLAN_REPORT_VERSION,
     programId,
     generatedAt: now().toISOString(),
     inputHash,
-    outcome: "requires-replan",
+    outcome,
     summary: input.summary,
+    ...(input.humanDecisionReason === undefined
+      ? {}
+      : { humanDecisionReason: input.humanDecisionReason }),
     replanFindings: input.replanFindings,
     relatedFindings: input.relatedFindings,
     classAnalyses: input.classAnalyses ?? [],
@@ -176,7 +190,9 @@ export async function writeReplanReport(
     checkpointAssessments: input.checkpointAssessments,
     criticSummary: input.criticSummary,
     criticLogs: input.criticLogs.map((log) => portableLogPath(root, log)),
-    planningInstruction: `Run /plan-program ${programId}. Read lastAttempt first when present and prioritize every failedSubjects entry. Resolve every replanFindings and blocker/major relatedFindings entry. For each classAnalyses entry, close the root-cause class by reconciling every checkedSubjects member with an explicit fixed or already-correct disposition and concrete evidence; naming a member in narrative prose is not proof. Re-check every workstreams[].scope copy affected by a criterion or interface repair. Apply only the explicitly listed intent-preserving criteriaPatches; any other requirements change needs a human decision.`,
+    planningInstruction: outcome === "human-required"
+      ? `Run /plan-program ${programId}. This report requires a human requirements decision before any replanning. Present every decision in humanDecisionReason to the user as explicit choices, wait for their answers, and record each decision with its rationale in the program document. The user's recorded decisions are the only authorization for changing success criteria or user intent. Then resolve every replanFindings and blocker/major relatedFindings entry, close every classAnalyses root-cause class by reconciling every checkedSubjects member with an explicit fixed or already-correct disposition and concrete evidence, and re-check every workstreams[].scope copy affected by a criterion or interface repair.`
+      : `Run /plan-program ${programId}. Read lastAttempt first when present and prioritize every failedSubjects entry. Resolve every replanFindings and blocker/major relatedFindings entry. For each classAnalyses entry, close the root-cause class by reconciling every checkedSubjects member with an explicit fixed or already-correct disposition and concrete evidence; naming a member in narrative prose is not proof. Re-check every workstreams[].scope copy affected by a criterion or interface repair. Apply only the explicitly listed intent-preserving criteriaPatches; any other requirements change needs a human decision.`,
     ...(supersedes === undefined ? {} : { supersedes }),
   };
   await mkdir(dirname(path), { recursive: true });

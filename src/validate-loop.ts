@@ -807,14 +807,50 @@ export async function validateLoop(
         criticReply.requirementsChangeReason ??
         "The critic requested a change to user requirements or success criteria.";
       progress(`round ${round}: requirements decision required; automatic replan stopped`);
+      let humanReport: string | undefined;
+      try {
+        const written = await writeReplanReport(
+          root,
+          options.programId,
+          config,
+          {
+            summary: "Convergence requires a human requirements decision.",
+            replanFindings: [],
+            relatedFindings: [...seen.values()],
+            checkpointAssessments: criticReply.checkpointAssessments,
+            criticSummary: requirementReason,
+            criticLogs,
+            classAnalyses: criticReply.classAnalyses,
+            criteriaPatches: criticReply.criteriaPatches,
+            outcome: "human-required",
+            humanDecisionReason: requirementReason,
+          },
+          options.now,
+        );
+        humanReport = written.path;
+      } catch (error) {
+        progress(
+          `WARNING: could not persist the human-decision handoff: ${jsonError(error)}`,
+        );
+      }
       return aborted(
         options.programId,
-        `Convergence requests a human requirements decision and will not automatically replan: ${requirementReason}`,
+        [
+          `Convergence requests a human requirements decision and will not automatically replan: ${requirementReason}`,
+          ...(humanReport
+            ? [
+                `Decision report: ${humanReport}`,
+                `Run /plan-program ${options.programId}; it will present these decisions and consume this report.`,
+              ]
+            : []),
+        ].join("\n"),
         {
           rounds,
           strict,
           findings: [...seen.values()],
           criticLogs,
+          ...(humanReport ? { replanReport: humanReport } : {}),
+          requirementsChangeRequested: true,
         },
       );
     }
@@ -1122,6 +1158,8 @@ function aborted(
     strict: boolean;
     findings: IdentifiedFinding[];
     criticLogs?: string[];
+    replanReport?: string;
+    requirementsChangeRequested?: boolean;
   },
 ): ValidateLoopResult {
   return {
@@ -1135,6 +1173,12 @@ function aborted(
     openDisagreements: [],
     replanFindings: [],
     criticLogs: partial?.criticLogs ?? [],
+    ...(partial?.replanReport === undefined
+      ? {}
+      : { replanReport: partial.replanReport }),
+    ...(partial?.requirementsChangeRequested === undefined
+      ? {}
+      : { requirementsChangeRequested: partial.requirementsChangeRequested }),
   };
 }
 

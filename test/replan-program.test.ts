@@ -52,6 +52,29 @@ describe("replanProgram", () => {
       .resolves.toBe("# Alpha\nhuman edit\n");
   });
 
+  it("refuses to automatically replan a human-required report", async () => {
+    const root = await fixture();
+    const reportPath = join(root, "docs", "programs", "alpha-replan.json");
+    const report = JSON.parse(await readFile(reportPath, "utf8")) as Record<string, unknown>;
+    report.outcome = "human-required";
+    report.humanDecisionReason = "Either authorize publication or stop claiming the rung is built.";
+    await writeFile(reportPath, JSON.stringify(report), "utf8");
+    let calls = 0;
+    const result = await replanProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        calls += 1;
+        return { exitCode: 0, output: proof };
+      },
+    });
+    expect(result.result).toBe("ABORTED");
+    expect(result.reason).toContain("human requirements decision");
+    expect(result.reason).toContain("/plan-program alpha");
+    expect(result.reason).toContain("authorize publication");
+    expect(calls).toBe(0);
+  });
+
   it("requires a class-wide resolution proof", async () => {
     const root = await fixture();
     let calls = 0;
@@ -80,7 +103,7 @@ describe("replanProgram", () => {
       lastAttempt: { outcome: string; reason: string; failedSubjects: string[]; artifactsLeftOnDisk: boolean };
       attemptHistory: unknown[];
     };
-    expect(report.schemaVersion).toBe(3);
+    expect(report.schemaVersion).toBe(4);
     expect(report.lastAttempt).toMatchObject({
       outcome: "rejected",
       artifactsLeftOnDisk: false,

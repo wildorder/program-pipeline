@@ -204,6 +204,37 @@ describe("auditPlan", () => {
     expect(result.reason).toContain("missing: SC-02");
   });
 
+  it("persists a human-required handoff report for a requirements decision", async () => {
+    const root = await fixture();
+    const conflict = { ...assessment("SC-01"), status: "conflict", reason: "the criterion contradicts the repository's actual publication state" };
+    const result = await auditPlan({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => ({ exitCode: 0, output: `\`\`\`json\n${JSON.stringify({
+        criterionAssessments: [conflict, assessment("SC-02")],
+        findings: [{ severity: "blocker", category: "acceptance-criteria", subject: "SC-01", message: "Either authorize publication or stop claiming it.", evidence: [{ kind: "concern", named: "intent conflict" }], requiresReplan: true }],
+        classAnalyses: [{ subject: "SC-01", scope: "isolated", rootCause: "two mutually incompatible requirements", affectedSubjects: ["publication claim"], checkedSubjects: ["publication claim", "publication pipeline"], completenessBasis: "both copies of the requirement" }],
+        requirementsChangeRequested: true,
+        requirementsChangeReason: "Either authorize publication or stop claiming the rung is built.",
+        criteriaPatches: [],
+      })}\n\`\`\`` }),
+    });
+    expect(result.result).toBe("HUMAN_REQUIRED");
+    expect(result.reason).toContain("authorize publication");
+    expect(result.replanReport).toBeDefined();
+    const report = JSON.parse(await readFile(result.replanReport!, "utf8")) as {
+      outcome: string;
+      humanDecisionReason: string;
+      relatedFindings: unknown[];
+      planningInstruction: string;
+    };
+    expect(report.outcome).toBe("human-required");
+    expect(report.humanDecisionReason).toContain("authorize publication");
+    expect(report.relatedFindings).toHaveLength(1);
+    expect(report.planningInstruction).toContain("human requirements decision");
+    expect(report.planningInstruction).toContain("wait for their answers");
+  });
+
   it("writes class-wide closure obligations before authoring", async () => {
     const root = await fixture();
     const conflict = { ...assessment("SC-01"), status: "conflict", reason: "command families have incompatible signatures" };
@@ -220,7 +251,7 @@ describe("auditPlan", () => {
     });
     expect(result.result).toBe("REQUIRES_REPLAN");
     const report = JSON.parse(await readFile(result.replanReport!, "utf8")) as { schemaVersion: number; inputHash: string; classAnalyses: unknown[]; planningInstruction: string };
-    expect(report.schemaVersion).toBe(3);
+    expect(report.schemaVersion).toBe(4);
     expect(report.inputHash).toMatch(/^[a-f0-9]{64}$/u);
     expect(report.classAnalyses).toHaveLength(1);
     expect(report.planningInstruction).toContain("root-cause class");

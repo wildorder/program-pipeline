@@ -133,6 +133,7 @@ export {
   replanHistoryDir,
   writeReplanReport,
   type ReplanReport,
+  type ReplanReportOutcome,
   type ReplanAttempt,
   type ReplanResolutionProof,
 } from "./replan-report.js";

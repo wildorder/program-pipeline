@@ -489,9 +489,24 @@ export async function auditPlan(options: PlanAuditOptions): Promise<PlanAuditRes
   const analyzed = new Set(classAnalyses.map(({ subject }) => subject));
   const missingAnalysis = [...new Set(findings.filter(haltsConvergence).map(({ subject }) => subject).filter((subject) => !analyzed.has(subject)))];
   if (missingAnalysis.length > 0) return { result: "ABORTED", reason: `Plan critic omitted class-wide analysis for: ${missingAnalysis.join(", ")}.`, agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, criticLogs };
-  const substantive = reply.requirementsChangeRequested && (reply.criteriaPatches.length === 0 || reply.criteriaPatches.some((patch) => patch.kind === "substantive" || !patch.intentPreserved));
-  if (substantive) return { result: "HUMAN_REQUIRED", reason: reply.requirementsChangeReason ?? "The plan audit found a genuine requirements decision.", agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, criticLogs };
   const blocking = findings.filter(haltsConvergence);
+  const substantive = reply.requirementsChangeRequested && (reply.criteriaPatches.length === 0 || reply.criteriaPatches.some((patch) => patch.kind === "substantive" || !patch.intentPreserved));
+  if (substantive) {
+    const humanReason = reply.requirementsChangeReason ?? "The plan audit found a genuine requirements decision.";
+    const written = await writeReplanReport(root, options.programId, config, {
+      summary: "Plan audit requires a human requirements decision before authoring.",
+      replanFindings: blocking,
+      relatedFindings: findings,
+      checkpointAssessments: [],
+      criticSummary: conflicts.map(({ criterionId, reason }) => `${criterionId}: ${reason}`).join("; "),
+      criticLogs,
+      classAnalyses,
+      criteriaPatches: reply.criteriaPatches,
+      outcome: "human-required",
+      humanDecisionReason: humanReason,
+    }, options.now);
+    return { result: "HUMAN_REQUIRED", reason: humanReason, agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, replanReport: written.path, criticLogs };
+  }
   if (conflicts.length === 0 && blocking.length === 0) return { result: "PASSED", agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, ...(modeAssessment ? { modeAssessment } : {}), criticLogs };
   const written = await writeReplanReport(root, options.programId, config, { summary: `Plan audit found ${blocking.length} blocker/major finding(s) before authoring.`, replanFindings: blocking, relatedFindings: findings, checkpointAssessments: [], criticSummary: conflicts.map(({ criterionId, reason }) => `${criterionId}: ${reason}`).join("; "), criticLogs, classAnalyses, criteriaPatches: reply.criteriaPatches }, options.now);
   return { result: "REQUIRES_REPLAN", reason: `Plan audit found ${blocking.length} blocker/major finding(s) before authoring.`, agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, ...(modeAssessment ? { modeAssessment } : {}), replanReport: written.path, criticLogs };

@@ -66,6 +66,9 @@ const strings = (value: unknown): string[] =>
     ? [...new Set(value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean))]
     : [];
 
+const isCompoundCriterionSubject = (subject: string): boolean =>
+  /^SC-\d+(?:\s*[/,+&]\s*SC-\d+)+$/u.test(subject.trim());
+
 function parseAssessments(value: unknown): CriterionAssessment[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => {
@@ -211,8 +214,8 @@ function parseAuditContract(
   for (const [index, item] of rawFindings.entries()) {
     if (typeof item !== "object" || item === null) continue;
     const subject = (item as Record<string, unknown>).subject;
-    if (typeof subject === "string" && /^SC-\d+(?:\s*[/,+&]\s*SC-\d+)+$/u.test(subject.trim())) {
-      errors.push(`findings[${index + 1}].subject "${subject}": compound criterion subjects are unstable; emit one finding per SC-id or choose one canonical subject`);
+    if (typeof subject === "string" && isCompoundCriterionSubject(subject)) {
+      errors.push(`findings[${index + 1}].subject "${subject}": compound criterion subjects are invalid; emit one finding per SC-id, and give every SC-id assessed as conflict its own matching classAnalyses entry`);
     }
   }
 
@@ -221,7 +224,10 @@ function parseAuditContract(
   const analyzed = new Set(parsedAnalyses.analyses.map(({ subject }) => subject));
   const conflicts = criterionAssessments.filter(({ status }) => status === "conflict");
   const requiredAnalysis = new Set([
-    ...reply.findings.filter(haltsConvergence).map(({ subject }) => subject),
+    ...reply.findings
+      .filter(haltsConvergence)
+      .map(({ subject }) => subject)
+      .filter((subject) => !isCompoundCriterionSubject(subject)),
     ...conflicts.map(({ criterionId }) => criterionId),
   ]);
   const missingAnalysis = [...requiredAnalysis].filter((subject) => !analyzed.has(subject));
@@ -251,7 +257,9 @@ ${errors.map((error) => `- ${error}`).join("\n")}
 
 Requirements:
 - Preserve the original semantic judgment.
-- Use one stable subject per finding; never combine SC ids with slashes.
+- Use exactly one SC-id as the subject of a criterion finding; never combine SC ids with slashes, commas, plus signs, or conjunctions.
+- If one defect affects multiple criteria, emit one finding per affected SC-id. Repeat the shared root cause and evidence when necessary; do not collapse the criteria to one canonical subject.
+- Every criterion assessed as conflict has its own classAnalyses entry whose subject is that criterionId, even when another criterion has the same root cause.
 - Every blocker/major subject has exactly one classAnalyses entry with the same subject.
 - Every affectedSubjects member also appears in checkedSubjects.
 - Return every criterion assessment exactly once.
@@ -282,13 +290,20 @@ not evidence that an existing API can express a criterion.
 Review the whole plan, not one counterexample. When a rule or success criterion
 applies to a list or conceptual family, enumerate the complete family from a
 canonical source (registry, manifest, exported union, route table, or explicit
-criterion list), inspect every member, and report all affected members in one
-finding. Do not patch an instance while leaving its siblings for later rounds.
+criterion list), inspect every member, and report all affected members for that
+criterion in one finding. Do not patch an instance while leaving its siblings
+for later rounds. If the same root cause affects multiple success criteria,
+emit one finding and one class analysis per SC-id; never use a compound subject
+such as "SC-01 / SC-02" and never orphan a conflicting criterion by choosing
+only one canonical SC-id.
 
 For every blocker or major finding, classify it as isolated or systemic and
 provide a class analysis with the same subject. checkedSubjects is everything
 you inspected; affectedSubjects is the complete subset that needs repair;
 completenessBasis explains why no parallel instance was omitted.
+Every criterionAssessment with status "conflict" also requires a classAnalysis
+whose subject exactly equals that criterionId, whether or not its root cause is
+shared with another criterion.
 
 When a criterion, interface, roster, or rule is repeated, checkedSubjects must
 include every canonical copy: program criterion text, manifest criterion text,

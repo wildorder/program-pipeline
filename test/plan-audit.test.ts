@@ -87,10 +87,66 @@ describe("auditPlan", () => {
     });
     expect(result.result).toBe("ABORTED");
     expect(calls).toBe(2);
-    expect(result.reason).toContain("compound criterion subjects are unstable");
-    expect(result.reason).toContain("classAnalyses missing for blocker/major subjects: SC-01/SC-02");
+    expect(result.reason).toContain("compound criterion subjects are invalid");
     expect(result.criticLogs).toHaveLength(2);
     await Promise.all(result.criticLogs!.map((path) => expect(readFile(path, "utf8")).resolves.toBe(output)));
+  });
+
+  it("requires separate findings and class analyses when one defect conflicts with multiple criteria", async () => {
+    const root = await fixture();
+    const prompts: string[] = [];
+    let calls = 0;
+    const conflict = (criterionId: string) => ({
+      ...assessment(criterionId),
+      status: "conflict",
+      reason: "the shared contract makes this criterion unsatisfiable",
+    });
+    const finding = (subject: string) => ({
+      severity: "blocker",
+      category: "acceptance-criteria",
+      subject,
+      message: "The shared contract conflicts with this criterion.",
+      evidence: [{ kind: "concern", named: "shared contract mismatch" }],
+      requiresReplan: true,
+    });
+    const analysis = (subject: string) => ({
+      subject,
+      scope: "systemic",
+      rootCause: "one shared contract contradicts both criteria",
+      affectedSubjects: ["shared contract"],
+      checkedSubjects: ["shared contract", "all consumers"],
+      completenessBasis: "the complete consumer registry",
+    });
+    const result = await auditPlan({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        calls += 1;
+        prompts.push(invocation.prompt);
+        const corrected = calls === 2;
+        return {
+          exitCode: 0,
+          output: `\`\`\`json\n${JSON.stringify({
+            criterionAssessments: [conflict("SC-01"), conflict("SC-02")],
+            findings: corrected
+              ? [finding("SC-01"), finding("SC-02")]
+              : [finding("SC-01 / SC-02")],
+            classAnalyses: corrected
+              ? [analysis("SC-01"), analysis("SC-02")]
+              : [analysis("SC-01")],
+            requirementsChangeRequested: false,
+            criteriaPatches: [],
+          })}\n\`\`\``,
+        };
+      },
+    });
+    expect(result.result).toBe("REQUIRES_REPLAN");
+    expect(calls).toBe(2);
+    expect(prompts[1]).toContain("emit one finding per SC-id");
+    expect(prompts[1]).toContain("classAnalyses missing for blocker/major subjects: SC-02");
+    expect(prompts[1]).toContain("do not collapse the criteria to one canonical subject");
+    expect(result.findings.map(({ subject }) => subject)).toEqual(["SC-01", "SC-02"]);
+    expect(result.classAnalyses.map(({ subject }) => subject)).toEqual(["SC-01", "SC-02"]);
   });
 
   it("passes only with exact, source-grounded coverage for every criterion", async () => {

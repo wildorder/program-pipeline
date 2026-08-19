@@ -1,6 +1,6 @@
 {
   "name": "@wildorder/program-pipeline",
-  "version": "0.13.18",
+  "version": "0.13.19",
   "description": "Provider-neutral program planning and agentic delivery pipeline",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

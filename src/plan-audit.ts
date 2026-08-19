@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import {
   defaultAgentRunner,
@@ -14,6 +15,7 @@ import { parseExecutionMode, type ExecutionMode } from "./execution-mode.js";
 import {
   extractJson,
   parseCriticReply,
+  type CriticReply,
   type CriteriaPatch,
 } from "./validate-loop.js";
 
@@ -44,6 +46,7 @@ export interface PlanAuditResult {
   criteriaPatches: CriteriaPatch[];
   modeAssessment?: ModeAssessment;
   replanReport?: string;
+  criticLogs?: string[];
 }
 
 export interface PlanAuditOptions {
@@ -88,30 +91,57 @@ function parseAssessments(value: unknown): CriterionAssessment[] {
   });
 }
 
-function parseClassAnalyses(value: unknown): PlanClassAnalysis[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
-    if (typeof item !== "object" || item === null) return [];
+function parseClassAnalyses(value: unknown): {
+  analyses: PlanClassAnalysis[];
+  errors: string[];
+} {
+  if (!Array.isArray(value)) {
+    return { analyses: [], errors: ["classAnalyses must be an array"] };
+  }
+  const analyses: PlanClassAnalysis[] = [];
+  const errors: string[] = [];
+  for (const [index, item] of value.entries()) {
+    if (typeof item !== "object" || item === null) {
+      errors.push(`classAnalyses[entry ${index + 1}]: must be an object`);
+      continue;
+    }
     const record = item as Record<string, unknown>;
+    const subject = typeof record.subject === "string" ? record.subject.trim() : "";
+    const rootCause = typeof record.rootCause === "string" ? record.rootCause.trim() : "";
+    const completenessBasis = typeof record.completenessBasis === "string"
+      ? record.completenessBasis.trim()
+      : "";
+    const label = subject
+      ? subject
+      : `entry ${index + 1}`;
     const affectedSubjects = strings(record.affectedSubjects);
     const checkedSubjects = strings(record.checkedSubjects);
-    if (
-      typeof record.subject !== "string" || record.subject.trim() === "" ||
-      (record.scope !== "isolated" && record.scope !== "systemic") ||
-      typeof record.rootCause !== "string" || record.rootCause.trim() === "" ||
-      checkedSubjects.length === 0 ||
-      affectedSubjects.some((subject) => !checkedSubjects.includes(subject)) ||
-      typeof record.completenessBasis !== "string" || record.completenessBasis.trim() === ""
-    ) return [];
-    return [{
-      subject: record.subject.trim(),
-      scope: record.scope,
-      rootCause: record.rootCause.trim(),
+    const entryErrors: string[] = [];
+    if (!subject) entryErrors.push("subject must be a non-empty string");
+    if (record.scope !== "isolated" && record.scope !== "systemic") entryErrors.push("scope must be isolated or systemic");
+    if (!rootCause) entryErrors.push("rootCause must be non-empty");
+    if (checkedSubjects.length === 0) entryErrors.push("checkedSubjects must contain at least one member");
+    const uncheckedAffected = affectedSubjects.filter((subject) => !checkedSubjects.includes(subject));
+    if (uncheckedAffected.length > 0) entryErrors.push(`affectedSubjects absent from checkedSubjects: ${uncheckedAffected.join(", ")}`);
+    if (!completenessBasis) entryErrors.push("completenessBasis must be non-empty");
+    if (entryErrors.length > 0) {
+      errors.push(`classAnalyses[${label}]: ${entryErrors.join("; ")}`);
+      continue;
+    }
+    analyses.push({
+      subject,
+      scope: record.scope as "isolated" | "systemic",
+      rootCause,
       affectedSubjects,
       checkedSubjects,
-      completenessBasis: record.completenessBasis.trim(),
-    }];
-  });
+      completenessBasis,
+    });
+  }
+  const counts = new Map<string, number>();
+  for (const { subject } of analyses) counts.set(subject, (counts.get(subject) ?? 0) + 1);
+  const duplicates = [...counts].filter(([, count]) => count > 1).map(([subject]) => subject);
+  if (duplicates.length > 0) errors.push(`classAnalyses contains duplicate subjects: ${duplicates.join(", ")}`);
+  return { analyses, errors };
 }
 
 function parseModeAssessment(value: unknown): ModeAssessment | undefined {
@@ -127,6 +157,112 @@ function parseModeAssessment(value: unknown): ModeAssessment | undefined {
   let mode: ExecutionMode;
   try { mode = parseExecutionMode(record.mode); } catch { return undefined; }
   return { mode, status: record.status, reason: record.reason.trim(), evidence };
+}
+
+interface ParsedAuditContract {
+  record: Record<string, unknown>;
+  criterionAssessments: CriterionAssessment[];
+  classAnalyses: PlanClassAnalysis[];
+  modeAssessment?: ModeAssessment;
+  reply: CriticReply;
+}
+
+function parseAuditContract(
+  output: string,
+  criterionIds: string[],
+  executionMode: ExecutionMode,
+  requireModeAssessment: boolean,
+): { contract?: ParsedAuditContract; errors: string[] } {
+  const raw = extractJson(
+    output,
+    (value) => typeof value === "object" && value !== null &&
+      Array.isArray((value as Record<string, unknown>).criterionAssessments) &&
+      Array.isArray((value as Record<string, unknown>).findings),
+  );
+  if (typeof raw !== "object" || raw === null) {
+    return { errors: ["response contains no fenced JSON object with criterionAssessments and findings arrays"] };
+  }
+  const record = raw as Record<string, unknown>;
+  const errors: string[] = [];
+  const criterionAssessments = parseAssessments(record.criterionAssessments);
+  const assessmentCounts = new Map<string, number>();
+  for (const { criterionId } of criterionAssessments) {
+    assessmentCounts.set(criterionId, (assessmentCounts.get(criterionId) ?? 0) + 1);
+  }
+  const missing = criterionIds.filter((id) => !assessmentCounts.has(id));
+  const duplicate = [...assessmentCounts].filter(([, count]) => count > 1).map(([id]) => id);
+  const unexpected = [...assessmentCounts.keys()].filter((id) => !criterionIds.includes(id));
+  if (missing.length > 0) errors.push(`criterionAssessments missing: ${missing.join(", ")}`);
+  if (duplicate.length > 0) errors.push(`criterionAssessments duplicated: ${duplicate.join(", ")}`);
+  if (unexpected.length > 0) errors.push(`criterionAssessments unexpected: ${unexpected.join(", ")}`);
+  if (criterionAssessments.length !== (Array.isArray(record.criterionAssessments) ? record.criterionAssessments.length : 0)) {
+    errors.push("one or more criterionAssessments entries are malformed: require criterionId, satisfiable|conflict status, non-empty reason, checkedSubjects, and completenessBasis");
+  }
+
+  const modeAssessment = parseModeAssessment(record.modeAssessment);
+  if (requireModeAssessment && !modeAssessment) errors.push(`modeAssessment missing or malformed for ${executionMode}`);
+  else if (requireModeAssessment && modeAssessment?.mode !== executionMode) errors.push(`modeAssessment.mode must be ${executionMode}, received ${modeAssessment?.mode ?? "missing"}`);
+
+  const reply = parseCriticReply(output);
+  if (!reply.found) {
+    errors.push(`findings contract unreadable: ${reply.protocolFailure?.message ?? "unknown protocol failure"}`);
+  }
+  const rawFindings = Array.isArray(record.findings) ? record.findings : [];
+  for (const [index, item] of rawFindings.entries()) {
+    if (typeof item !== "object" || item === null) continue;
+    const subject = (item as Record<string, unknown>).subject;
+    if (typeof subject === "string" && /^SC-\d+(?:\s*[/,+&]\s*SC-\d+)+$/u.test(subject.trim())) {
+      errors.push(`findings[${index + 1}].subject "${subject}": compound criterion subjects are unstable; emit one finding per SC-id or choose one canonical subject`);
+    }
+  }
+
+  const parsedAnalyses = parseClassAnalyses(record.classAnalyses);
+  errors.push(...parsedAnalyses.errors);
+  const analyzed = new Set(parsedAnalyses.analyses.map(({ subject }) => subject));
+  const conflicts = criterionAssessments.filter(({ status }) => status === "conflict");
+  const requiredAnalysis = new Set([
+    ...reply.findings.filter(haltsConvergence).map(({ subject }) => subject),
+    ...conflicts.map(({ criterionId }) => criterionId),
+  ]);
+  const missingAnalysis = [...requiredAnalysis].filter((subject) => !analyzed.has(subject));
+  if (missingAnalysis.length > 0) errors.push(`classAnalyses missing for blocker/major subjects: ${missingAnalysis.join(", ")}`);
+
+  if (errors.length > 0) return { errors };
+  return {
+    contract: {
+      record,
+      criterionAssessments,
+      classAnalyses: parsedAnalyses.analyses,
+      ...(modeAssessment ? { modeAssessment } : {}),
+      reply,
+    },
+    errors: [],
+  };
+}
+
+function correctionBrief(previous: string, errors: string[]): string {
+  return `# Correct the plan-audit response contract
+
+Your repository review is complete. Do not re-run the review, change findings,
+or edit files. Re-emit the complete fenced JSON contract and fenced summary,
+correcting every deterministic error below:
+
+${errors.map((error) => `- ${error}`).join("\n")}
+
+Requirements:
+- Preserve the original semantic judgment.
+- Use one stable subject per finding; never combine SC ids with slashes.
+- Every blocker/major subject has exactly one classAnalyses entry with the same subject.
+- Every affectedSubjects member also appears in checkedSubjects.
+- Return every criterion assessment exactly once.
+
+Previous response:
+
+---
+${previous}
+---
+
+${summaryContract()}`;
 }
 
 function brief(
@@ -256,21 +392,51 @@ export async function auditPlan(options: PlanAuditOptions): Promise<PlanAuditRes
   }
   const label = describeAgent(agent);
   progress(`plan critic: ${label}`);
-  const result = await (options.agentRunner ?? defaultAgentRunner)({ command: agent.command, args: agent.args, prompt: brief(options.programId, criterionIds, executionMode, requireModeAssessment, documents), promptMode: agent.promptMode, cwd: root });
-  if (result.inputError || result.exitCode !== 0) return { result: "ABORTED", reason: `Plan critic failed: ${result.inputError ?? result.output.slice(-1000)}`, agent: label, findings: [], criterionAssessments: [], classAnalyses: [], criteriaPatches: [] };
-  const raw = extractJson(result.output, (value) => typeof value === "object" && value !== null && Array.isArray((value as Record<string, unknown>).criterionAssessments) && Array.isArray((value as Record<string, unknown>).findings));
-  if (typeof raw !== "object" || raw === null) return { result: "ABORTED", reason: "Plan critic response did not match the required criterion-assessment contract.", agent: label, findings: [], criterionAssessments: [], classAnalyses: [], criteriaPatches: [] };
-  const record = raw as Record<string, unknown>;
-  const modeAssessment = parseModeAssessment(record.modeAssessment);
-  if (requireModeAssessment && (!modeAssessment || modeAssessment.mode !== executionMode)) {
-    return { result: "ABORTED", reason: `Plan critic omitted the required ${executionMode} mode assessment.`, agent: label, findings: [], criterionAssessments: [], classAnalyses: [], criteriaPatches: [] };
+  const runner = options.agentRunner ?? defaultAgentRunner;
+  const criticLogs: string[] = [];
+  const stamp = (options.now ?? (() => new Date()))().toISOString().replace(/[:.]/gu, "-");
+  const runId = `${stamp}-${randomUUID().slice(0, 8)}`;
+  const logDir = resolve(root, config.build.logDir);
+  let prompt = brief(options.programId, criterionIds, executionMode, requireModeAssessment, documents);
+  let contract: ParsedAuditContract | undefined;
+  let finalErrors: string[] = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const result = await runner({ command: agent.command, args: agent.args, prompt, promptMode: agent.promptMode, cwd: root });
+    const logPath = join(logDir, `${options.programId}-plan-audit-${runId}-critic-attempt-${attempt}.log`);
+    try {
+      await mkdir(logDir, { recursive: true });
+      await writeFile(logPath, result.output, { encoding: "utf8", flag: "wx" });
+      criticLogs.push(logPath);
+    } catch (error) {
+      progress(`WARNING: could not preserve plan critic response: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (result.inputError || result.exitCode !== 0) {
+      return { result: "ABORTED", reason: `Plan critic${attempt === 2 ? " correction retry" : ""} failed: ${result.inputError ?? result.output.slice(-1000)}. Full response: ${criticLogs.at(-1) ?? "could not be written"}`, agent: label, findings: [], criterionAssessments: [], classAnalyses: [], criteriaPatches: [], criticLogs };
+    }
+    const parsed = parseAuditContract(result.output, criterionIds, executionMode, requireModeAssessment);
+    finalErrors = parsed.errors;
+    if (parsed.contract) {
+      contract = parsed.contract;
+      break;
+    }
+    if (attempt === 1) {
+      progress(`plan critic protocol failure: ${finalErrors.join(" | ")}; retrying once to correct the response contract. Full response: ${criticLogs.at(-1) ?? "could not be written"}`);
+      prompt = correctionBrief(result.output, finalErrors);
+    }
   }
-  const criterionAssessments = parseAssessments(record.criterionAssessments);
-  const assessmentIds = new Set(criterionAssessments.map(({ criterionId }) => criterionId));
-  const missing = criterionIds.filter((id) => !assessmentIds.has(id));
-  const extra = criterionAssessments.filter(({ criterionId }) => !criterionIds.includes(criterionId)).map(({ criterionId }) => criterionId);
-  if (missing.length > 0 || extra.length > 0 || criterionAssessments.length !== criterionIds.length) return { result: "ABORTED", reason: `Plan critic criterion coverage is incomplete (missing: ${missing.join(", ") || "none"}; unexpected/duplicate: ${extra.join(", ") || "none"}).`, agent: label, findings: [], criterionAssessments, classAnalyses: [], criteriaPatches: [] };
-  const reply = parseCriticReply(result.output);
+  if (!contract) {
+    return {
+      result: "ABORTED",
+      reason: `Plan critic response remained invalid after one correction retry: ${finalErrors.join(" | ")}. Full responses: ${criticLogs.join(", ") || "could not be written"}.`,
+      agent: label,
+      findings: [],
+      criterionAssessments: [],
+      classAnalyses: [],
+      criteriaPatches: [],
+      criticLogs,
+    };
+  }
+  const { criterionAssessments, classAnalyses, modeAssessment, reply } = contract;
   const conflicts = criterionAssessments.filter(({ status }) => status === "conflict");
   const modeFinding = modeAssessment?.status === "inappropriate" ? {
     severity: "blocker" as const,
@@ -280,7 +446,7 @@ export async function auditPlan(options: PlanAuditOptions): Promise<PlanAuditRes
     evidence: modeAssessment.evidence.map((detail) => ({ kind: "concern" as const, named: "execution mode mismatch", detail })),
     requiresReplan: true,
   } : undefined;
-  const findings = [
+  const identified = [
     ...reply.findings,
     ...(modeFinding ? [modeFinding] : []),
     ...conflicts
@@ -294,7 +460,7 @@ export async function auditPlan(options: PlanAuditOptions): Promise<PlanAuditRes
         requiresReplan: true,
       })),
   ].map(identify);
-  const classAnalyses = parseClassAnalyses(record.classAnalyses);
+  const findings = [...new Map(identified.map((finding) => [finding.id, finding])).values()];
   if (modeFinding && !classAnalyses.some(({ subject }) => subject === "execution mode")) {
     classAnalyses.push({
       subject: "execution mode",
@@ -306,12 +472,12 @@ export async function auditPlan(options: PlanAuditOptions): Promise<PlanAuditRes
     });
   }
   const analyzed = new Set(classAnalyses.map(({ subject }) => subject));
-  const missingAnalysis = findings.filter(haltsConvergence).filter(({ subject }) => !analyzed.has(subject));
-  if (missingAnalysis.length > 0) return { result: "ABORTED", reason: `Plan critic omitted class-wide analysis for: ${missingAnalysis.map(({ subject }) => subject).join(", ")}.`, agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches };
+  const missingAnalysis = [...new Set(findings.filter(haltsConvergence).map(({ subject }) => subject).filter((subject) => !analyzed.has(subject)))];
+  if (missingAnalysis.length > 0) return { result: "ABORTED", reason: `Plan critic omitted class-wide analysis for: ${missingAnalysis.join(", ")}.`, agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, criticLogs };
   const substantive = reply.requirementsChangeRequested && (reply.criteriaPatches.length === 0 || reply.criteriaPatches.some((patch) => patch.kind === "substantive" || !patch.intentPreserved));
-  if (substantive) return { result: "HUMAN_REQUIRED", reason: reply.requirementsChangeReason ?? "The plan audit found a genuine requirements decision.", agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches };
+  if (substantive) return { result: "HUMAN_REQUIRED", reason: reply.requirementsChangeReason ?? "The plan audit found a genuine requirements decision.", agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, criticLogs };
   const blocking = findings.filter(haltsConvergence);
-  if (conflicts.length === 0 && blocking.length === 0) return { result: "PASSED", agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, ...(modeAssessment ? { modeAssessment } : {}) };
-  const written = await writeReplanReport(root, options.programId, config, { summary: `Plan audit found ${blocking.length} blocker/major finding(s) before authoring.`, replanFindings: blocking, relatedFindings: findings, checkpointAssessments: [], criticSummary: conflicts.map(({ criterionId, reason }) => `${criterionId}: ${reason}`).join("; "), criticLogs: [], classAnalyses, criteriaPatches: reply.criteriaPatches }, options.now);
-  return { result: "REQUIRES_REPLAN", reason: `Plan audit found ${blocking.length} blocker/major finding(s) before authoring.`, agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, ...(modeAssessment ? { modeAssessment } : {}), replanReport: written.path };
+  if (conflicts.length === 0 && blocking.length === 0) return { result: "PASSED", agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, ...(modeAssessment ? { modeAssessment } : {}), criticLogs };
+  const written = await writeReplanReport(root, options.programId, config, { summary: `Plan audit found ${blocking.length} blocker/major finding(s) before authoring.`, replanFindings: blocking, relatedFindings: findings, checkpointAssessments: [], criticSummary: conflicts.map(({ criterionId, reason }) => `${criterionId}: ${reason}`).join("; "), criticLogs, classAnalyses, criteriaPatches: reply.criteriaPatches }, options.now);
+  return { result: "REQUIRES_REPLAN", reason: `Plan audit found ${blocking.length} blocker/major finding(s) before authoring.`, agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, ...(modeAssessment ? { modeAssessment } : {}), replanReport: written.path, criticLogs };
 }

@@ -329,6 +329,12 @@ the complete family from a canonical registry/list/union and return a
 class-wide root-cause analysis. Missing criterion coverage or missing class
 analysis is a protocol failure, never a pass. A structural defect produces the
 normal replan report; automatic replanning is audited again before authoring.
+Plan-audit protocol errors receive one correction-only retry with precise
+field diagnostics—the critic re-emits its completed judgment without repeating
+repository analysis. Compound criterion subjects are rejected, duplicate
+findings are normalized by stable identity, and malformed class analyses name
+the exact invalid fields instead of being reported as merely "omitted". Both
+raw responses are preserved under `build-logs/*-plan-audit-*.log`.
 
 `review` is **not** in the default sequence. It never blocks and it costs an
 agent, so the default path to a built program does not pay for it; add

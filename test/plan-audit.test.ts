@@ -39,6 +39,60 @@ const assessment = (criterionId: string) => ({
 });
 
 describe("auditPlan", () => {
+  it("uses one correction-only retry for a malformed class analysis", async () => {
+    const root = await fixture();
+    const prompts: string[] = [];
+    let calls = 0;
+    const finding = { severity: "blocker", category: "acceptance-criteria", subject: "SC-01", message: "The criterion conflicts with the API.", evidence: [{ kind: "concern", named: "signature mismatch" }], requiresReplan: true };
+    const response = (checkedSubjects: string[]) => `\`\`\`json\n${JSON.stringify({
+      criterionAssessments: [assessment("SC-01"), assessment("SC-02")],
+      findings: [finding],
+      classAnalyses: [{ subject: "SC-01", scope: "systemic", rootCause: "signature family mismatch", affectedSubjects: ["command a"], checkedSubjects, completenessBasis: "complete command registry" }],
+      requirementsChangeRequested: false,
+      criteriaPatches: [],
+    })}\n\`\`\``;
+    const result = await auditPlan({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        calls += 1;
+        prompts.push(invocation.prompt);
+        return { exitCode: 0, output: response(calls === 1 ? ["command b"] : ["command a", "command b"]) };
+      },
+    });
+    expect(result.result).toBe("REQUIRES_REPLAN");
+    expect(calls).toBe(2);
+    expect(prompts[1]).toContain("affectedSubjects absent from checkedSubjects: command a");
+    expect(prompts[1]).toContain("Do not re-run the review");
+    expect(result.criticLogs).toHaveLength(2);
+  });
+
+  it("aborts with exact diagnostics and both logs when correction remains malformed", async () => {
+    const root = await fixture();
+    const output = `\`\`\`json\n${JSON.stringify({
+      criterionAssessments: [assessment("SC-01"), assessment("SC-02")],
+      findings: [{ severity: "major", category: "acceptance-criteria", subject: "SC-01/SC-02", message: "Combined finding.", evidence: [{ kind: "concern", named: "combined subject" }], requiresReplan: true }],
+      classAnalyses: [],
+      requirementsChangeRequested: false,
+      criteriaPatches: [],
+    })}\n\`\`\``;
+    let calls = 0;
+    const result = await auditPlan({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        calls += 1;
+        return { exitCode: 0, output };
+      },
+    });
+    expect(result.result).toBe("ABORTED");
+    expect(calls).toBe(2);
+    expect(result.reason).toContain("compound criterion subjects are unstable");
+    expect(result.reason).toContain("classAnalyses missing for blocker/major subjects: SC-01/SC-02");
+    expect(result.criticLogs).toHaveLength(2);
+    await Promise.all(result.criticLogs!.map((path) => expect(readFile(path, "utf8")).resolves.toBe(output)));
+  });
+
   it("passes only with exact, source-grounded coverage for every criterion", async () => {
     const root = await fixture();
     const result = await auditPlan({

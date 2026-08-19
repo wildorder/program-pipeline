@@ -221,6 +221,16 @@ describe("parseDeclaration", () => {
     });
   });
 
+  it("reads typed file actions for canonical rendering", () => {
+    const output = `\`\`\`json
+{"filesTouched":[{"path":"src/old.ts","action":"DELETE"},{"path":"src/new.ts","action":"NEW","note":"seed"}]}
+\`\`\``;
+    expect(parseDeclaration(output).filesTouched).toEqual([
+      { path: "src/old.ts", action: "DELETE" },
+      { path: "src/new.ts", action: "NEW", note: "seed" },
+    ]);
+  });
+
   it("drops anything that is not a workstream id from the id lists", () => {
     const output = `\`\`\`json
 { "dependencies": ["WS-03", "the storage layer", "ws-4", 7], "needs": ["WS-1"] }

@@ -79,6 +79,12 @@ export interface AuthorDeclaration {
   unmet: string[];
   /** Structural reasons this scope cannot be an independently green checkpoint. */
   replan: string[];
+  /** Typed file actions used to render the canonical Files Touched section. */
+  filesTouched?: Array<{
+    path: string;
+    action: "NEW" | "MODIFY" | "DELETE";
+    note?: string;
+  }>;
 }
 
 export interface AuthorWorkstreamOutcome {
@@ -217,7 +223,8 @@ export function parseDeclaration(output: string): AuthorDeclaration {
       hasArrayKey(value, "dependencies") ||
       hasArrayKey(value, "needs") ||
       hasArrayKey(value, "unmet") ||
-      hasArrayKey(value, "replan"),
+      hasArrayKey(value, "replan") ||
+      hasArrayKey(value, "filesTouched"),
   );
   const empty: AuthorDeclaration = {
     dependencies: [],
@@ -229,12 +236,83 @@ export function parseDeclaration(output: string): AuthorDeclaration {
   const record = parsed as Record<string, unknown>;
   const workstreamIds = (value: unknown): string[] =>
     cleanList(value).filter((id) => WORKSTREAM_ID.test(id));
+  const filesTouched = Array.isArray(record.filesTouched)
+    ? record.filesTouched.flatMap((item) => {
+        if (typeof item !== "object" || item === null) return [];
+        const entry = item as Record<string, unknown>;
+        if (
+          typeof entry.path !== "string" ||
+          entry.path.trim() === "" ||
+          (entry.action !== "NEW" &&
+            entry.action !== "MODIFY" &&
+            entry.action !== "DELETE")
+        ) {
+          return [];
+        }
+        return [
+          {
+            path: entry.path.trim(),
+            action: entry.action as "NEW" | "MODIFY" | "DELETE",
+            ...(typeof entry.note === "string" && entry.note.trim() !== ""
+              ? { note: entry.note.trim() }
+              : {}),
+          },
+        ];
+      })
+    : undefined;
   return {
     dependencies: workstreamIds(record.dependencies),
     needs: workstreamIds(record.needs),
     unmet: cleanList(record.unmet),
     replan: cleanList(record.replan),
+    ...(filesTouched === undefined ? {} : { filesTouched }),
   };
+}
+
+function renderFilesTouched(
+  files: NonNullable<AuthorDeclaration["filesTouched"]>,
+): string {
+  return [
+    `## ${SPEC_CONTRACT.sections.filesTouched}`,
+    "",
+    ...files.map(
+      ({ path, action, note }) =>
+        `- \`${path}\` (${action}${note ? ` — ${note}` : ""})`,
+    ),
+  ].join("\n");
+}
+
+/** Replace only the Files Touched section with pipeline-rendered syntax. */
+function canonicalizeFilesTouched(
+  markdown: string,
+  files: NonNullable<AuthorDeclaration["filesTouched"]>,
+): string {
+  const heading = `## ${SPEC_CONTRACT.sections.filesTouched}`;
+  const start = markdown.indexOf(heading);
+  if (start < 0) return markdown;
+  const after = markdown.slice(start + heading.length);
+  const next = after.search(/\r?\n##\s+/u);
+  const end = next < 0 ? markdown.length : start + heading.length + next;
+  return `${markdown.slice(0, start)}${renderFilesTouched(files)}${markdown.slice(end)}`;
+}
+
+function filesTouchedFormatError(markdown: string): string | undefined {
+  const heading = `## ${SPEC_CONTRACT.sections.filesTouched}`;
+  const section = markdown.slice(markdown.indexOf(heading) + heading.length);
+  const next = section.search(/\r?\n##\s+/u);
+  const content = (next < 0 ? section : section.slice(0, next)).trim();
+  if (content === "") return "Files Touched section is empty.";
+  const entry = new RegExp(SPEC_CONTRACT.fileEntryPattern, "u");
+  const annotation = new RegExp(SPEC_CONTRACT.fileAnnotationPattern, "u");
+  const lines = content
+    .split(/\r?\n/u)
+    .filter((line) => entry.test(line) && /[`/\\][^`]*`/u.test(line));
+  const missing = lines.filter((line) => !annotation.test(line));
+  return lines.length === 0
+    ? "Files Touched contains no file entries."
+    : missing.length > 0
+      ? `Files Touched entries missing canonical actions: ${missing.map((line) => line.trim()).join(" | ")}`
+      : undefined;
 }
 
 /**
@@ -596,7 +674,7 @@ export async function authorWorkstreams(
     await new Promise<void>((done) => logStream.end(done));
 
     const summary: AgentSummary = resolveSummary(result.output);
-    const declaration = parseDeclaration(result.output);
+    let declaration = parseDeclaration(result.output);
     await emit("author-agent-exit", {
       id: workstream.id,
       exitCode: result.exitCode,
@@ -644,8 +722,62 @@ export async function authorWorkstreams(
         reason: `The agent exited successfully but ${workstream.taskFile} does not exist.`,
       };
     }
-    const authored = await readFile(specPath, "utf8");
+    let authored = await readFile(specPath, "utf8");
+    if (declaration.filesTouched !== undefined) {
+      authored = canonicalizeFilesTouched(authored, declaration.filesTouched);
+      await atomicWriteText(specPath, authored);
+    }
     await atomicWriteText(specPath, stampSpecGeneration(authored, planGeneration));
+
+    // Catch format drift at the workstream boundary, while the author can
+    // still repair one small section instead of sending the whole program
+    // through validate/converge again.
+    const formatError = filesTouchedFormatError(authored);
+    if (formatError) {
+      const correctionPrompt = `${prompt}
+
+## Targeted correction
+
+The spec was written, but its Files Touched section is not machine-valid:
+${formatError}
+
+Rewrite only that section in the file. Every file entry must use exactly one
+canonical action marker: (NEW), (MODIFY), or (DELETE). Then re-emit the JSON
+declaration, including filesTouched with one {path, action, note?} object per
+file. Do not change requirements, implementation scope, or any other section.`;
+      progress(`${workstream.id}: invalid Files Touched section; requesting one targeted correction`);
+      const correction = await runAgent({
+        command: author.agent.command,
+        args: author.agent.args,
+        prompt: correctionPrompt,
+        promptMode: author.agent.promptMode,
+        cwd: root,
+        onOutput: (chunk) => { void appendFile(logPath, chunk); },
+      });
+      if (correction.inputError || correction.exitCode !== 0) {
+        return {
+          ...base,
+          status: "failed",
+          reason: `Targeted spec-format correction failed: ${correction.inputError ?? tail(correction.output, 300).trim()}`,
+        };
+      }
+      declaration = parseDeclaration(correction.output);
+      authored = await readFile(specPath, "utf8");
+      if (declaration.filesTouched !== undefined) {
+        authored = canonicalizeFilesTouched(authored, declaration.filesTouched);
+        await atomicWriteText(specPath, authored);
+      }
+      const remainingError = filesTouchedFormatError(authored);
+      if (remainingError) {
+        return {
+          ...base,
+          status: "failed",
+          reason: `Spec remains invalid after one targeted correction: ${remainingError}`,
+        };
+      }
+      await atomicWriteText(specPath, stampSpecGeneration(authored, planGeneration));
+      await emit("author-format-corrected", { id: workstream.id });
+    }
 
     await emit("workstream-authored", {
       id: workstream.id,
@@ -653,7 +785,7 @@ export async function authorWorkstreams(
       dependencies: declaration.dependencies,
     });
     progress(`${workstream.id} authored -> ${workstream.taskFile}`);
-    return base;
+    return { ...base, declaration };
   };
 
   const reconciliation: ReconciliationRecord[] = [];

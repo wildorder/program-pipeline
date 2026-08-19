@@ -265,6 +265,9 @@ Then reply with one fenced \`\`\`json block:
 
 \`\`\`json
 {
+  "filesTouched": [
+    { "path": "src/foo.ts", "action": "MODIFY", "note": "optional short note" }
+  ],
   "dependencies": ["WS-03"],
   "needs": ["WS-12"],
   "unmet": ["token rotation for the admin session"],
@@ -282,6 +285,12 @@ records it. An empty list means this workstream genuinely stands alone.
 this spec correctly without. Naming one here is the right move, not a
 failure: you will be re-run with that spec in the brief. Guessing at an
 interface you could have asked for is the failure.
+
+**filesTouched** — every file listed in the spec's "Files Touched" section,
+exactly once. "action" must be exactly "NEW", "MODIFY", or "DELETE". The
+pipeline renders the final Markdown annotations from this array; do not put
+action words only in prose. Use an empty array only when the spec truly has no
+file changes.
 
 **unmet** — things this workstream requires that **no** workstream in the
 roster provides. That is a gap in the program, not in your spec; it goes back

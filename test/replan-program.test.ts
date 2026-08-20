@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { replanProgram } from "../src/replan-program.js";
 import { replanInputHash } from "../src/replan-report.js";
@@ -19,6 +21,21 @@ async function fixture(criteriaPatches: unknown[] = []): Promise<string> {
   const finding = { id: "f1", severity: "blocker", category: "acceptance-criteria", subject: "SC-01", message: "mismatch", evidence: [{ kind: "concern", named: "signature mismatch" }], requiresReplan: true };
   await writeFile(join(root, "docs", "programs", "alpha-replan.json"), JSON.stringify({ schemaVersion: 2, programId: "alpha", replanFindings: [finding], relatedFindings: [finding], classAnalyses: [{ subject: "SC-01", scope: "systemic", rootCause: "family mismatch", affectedSubjects: ["a"], checkedSubjects: ["a", "b"], completenessBasis: "registry" }], criteriaPatches }), "utf8");
   return root;
+}
+
+const execFileAsync = promisify(execFile);
+
+async function gitify(root: string): Promise<void> {
+  const git = async (...args: string[]): Promise<void> => {
+    await execFileAsync("git", args, { cwd: root });
+  };
+  await git("init");
+  await git("config", "user.email", "test@example.com");
+  await git("config", "user.name", "Test");
+  await git("config", "commit.gpgsign", "false");
+  await writeFile(join(root, "notes.md"), "original notes\n", "utf8");
+  await git("add", "-A");
+  await git("commit", "-m", "initial");
 }
 
 const proof = `\`\`\`json
@@ -318,6 +335,61 @@ REPLAN_COMPLETE
     expect(result.reason).toContain("lack evidence");
     expect(result.reason).toContain("b");
     expect(result.reason).not.toContain("missing/duplicate");
+  });
+
+  it("restores out-of-scope edits and removes stray files when an attempt is rejected", async () => {
+    const root = await fixture();
+    await gitify(root);
+    const result = await replanProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        await writeFile(join(root, "docs", "programs", "alpha-program.md"), "# Alpha\nnew plan\n", "utf8");
+        await writeFile(join(root, "notes.md"), "vandalized\n", "utf8");
+        await writeFile(join(root, ".tmp-replan17.cjs"), "console.log(1)\n", "utf8");
+        return { exitCode: 0, output: "```summary\nREPLAN_COMPLETE\n```" };
+      },
+    });
+    expect(result.result).toBe("FAILED");
+    await expect(readFile(join(root, "notes.md"), "utf8")).resolves.toBe("original notes\n");
+    await expect(readFile(join(root, ".tmp-replan17.cjs"), "utf8")).rejects.toThrow();
+    await expect(readFile(join(root, "docs", "programs", "alpha-program.md"), "utf8"))
+      .resolves.toBe("# Alpha\nold plan\n");
+  });
+
+  it("keeps accepted plan edits but reverts out-of-scope changes and removes strays", async () => {
+    const root = await fixture();
+    await gitify(root);
+    const lines: string[] = [];
+    const result = await replanProgram({
+      cwd: root,
+      programId: "alpha",
+      onProgress: (line) => lines.push(line),
+      agentRunner: async () => {
+        await writeFile(join(root, "docs", "programs", "alpha-program.md"), "# Alpha\nnew plan\n", "utf8");
+        await writeFile(join(root, "notes.md"), "vandalized\n", "utf8");
+        await writeFile(join(root, ".tmp-replan17.cjs"), "console.log(1)\n", "utf8");
+        return { exitCode: 0, output: proof };
+      },
+    });
+    expect(result.result).toBe("COMPLETE");
+    await expect(readFile(join(root, "docs", "programs", "alpha-program.md"), "utf8"))
+      .resolves.toBe("# Alpha\nnew plan\n");
+    await expect(readFile(join(root, "notes.md"), "utf8")).resolves.toBe("original notes\n");
+    await expect(readFile(join(root, ".tmp-replan17.cjs"), "utf8")).rejects.toThrow();
+    expect(lines.some((line) => line.includes("out-of-scope"))).toBe(true);
+  });
+
+  it("warns that full rollback is unavailable outside a git repository", async () => {
+    const root = await fixture();
+    const lines: string[] = [];
+    await replanProgram({
+      cwd: root,
+      programId: "alpha",
+      onProgress: (line) => lines.push(line),
+      agentRunner: async () => ({ exitCode: 0, output: "```summary\nREPLAN_COMPLETE\n```" }),
+    });
+    expect(lines.some((line) => line.includes("git snapshot unavailable"))).toBe(true);
   });
 
   it("accepts an exact intent-preserving criterion patch with closure proof", async () => {

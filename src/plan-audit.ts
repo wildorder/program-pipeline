@@ -22,6 +22,7 @@ import {
   type CriticReply,
   type CriteriaPatch,
 } from "./validate-loop.js";
+import { captureWorktree, restoreWorktree } from "./worktree-guard.js";
 
 export type PlanClassAnalysis = ClassAnalysis;
 
@@ -412,7 +413,18 @@ export async function auditPlan(options: PlanAuditOptions): Promise<PlanAuditRes
   let contract: ParsedAuditContract | undefined;
   let finalErrors: string[] = [];
   for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const capture = await captureWorktree(root);
     const result = await runner({ command: agent.command, args: agent.args, prompt, promptMode: agent.promptMode, cwd: root });
+    // The critic's contract is read-only; enforce it rather than trusting it.
+    // Runs before the log write so the restore never deletes the log.
+    const cleanup = await restoreWorktree(root, capture);
+    if (cleanup.restored && (cleanup.drifted.length > 0 || cleanup.removed.length > 0)) {
+      progress(
+        `WARNING: plan critic modified the worktree despite its read-only contract; reverted ${cleanup.drifted.length} tracked file(s) (${cleanup.drifted.join(", ")})${
+          cleanup.removed.length > 0 ? ` and removed ${cleanup.removed.length} stray file(s) (${cleanup.removed.join(", ")})` : ""
+        }`,
+      );
+    }
     const logPath = join(logDir, `${options.programId}-plan-audit-${runId}-critic-attempt-${attempt}.log`);
     try {
       await mkdir(logDir, { recursive: true });

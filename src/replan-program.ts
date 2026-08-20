@@ -19,6 +19,11 @@ import {
 import { normalizeSubject } from "./findings.js";
 import { extractJson, hasArrayKey, type CriteriaPatch } from "./validate-loop.js";
 import {
+  captureWorktree,
+  restoreWorktree,
+  type WorktreeCapture,
+} from "./worktree-guard.js";
+import {
   buildProofObligations,
   type ProofObligation,
   type ReplanReport,
@@ -442,7 +447,19 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
     reason: string,
     failedSubjects: string[],
     resolutionProofs: ResolutionProof[],
+    capture: WorktreeCapture,
   ): Promise<void> => {
+    // Restore the WHOLE worktree, not just the plan artifacts: the replanner
+    // is a full agent and a rejected attempt may have edited out-of-scope
+    // files or littered temp scripts. "Rolled back" must mean rolled back.
+    const cleanup = await restoreWorktree(root, capture);
+    if (cleanup.restored && (cleanup.drifted.length > 0 || cleanup.removed.length > 0)) {
+      progress(
+        `replanner attempt ${attempt}/2 worktree restored: ${cleanup.drifted.length} tracked file(s) reverted${
+          cleanup.removed.length > 0 ? `, ${cleanup.removed.length} stray file(s) removed (${cleanup.removed.join(", ")})` : ""
+        }`,
+      );
+    }
     await Promise.all([
       atomicWriteText(programPath, beforeProgram),
       atomicWriteText(manifestPath, beforeManifest),
@@ -464,6 +481,12 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const reportBeforeAttempt = await readFile(reportPath, "utf8");
+    const capture = await captureWorktree(root);
+    if (!capture.available && attempt === 1) {
+      progress(
+        "WARNING: git snapshot unavailable (not a git repository, or git failed); a rejected attempt can only restore the program document and manifest, not other files the replanner may touch.",
+      );
+    }
     progress(`replanner attempt ${attempt}/2`);
     const result = await runner({
       command: agent.command,
@@ -560,6 +583,7 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
         rejection.reason,
         rejection.failedSubjects,
         attemptProofs,
+        capture,
       );
       previousRejection = rejection.reason;
       if (attempt < 2 && !result.inputError) continue;
@@ -569,6 +593,19 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
         agent: label,
         changedPaths: [],
       };
+    }
+
+    // Accepted attempts get sanitized too: only the plan artifacts may keep
+    // the replanner's edits. Everything else — out-of-scope edits, stray
+    // temp scripts — is reverted or removed so acceptance never smuggles
+    // side effects into the repository.
+    const sanitized = await restoreWorktree(root, capture, [programPath, manifestPath, reportPath]);
+    if (sanitized.restored && (sanitized.drifted.length > 0 || sanitized.removed.length > 0)) {
+      progress(
+        `replanner made out-of-scope changes; reverted ${sanitized.drifted.length} tracked file(s) (${sanitized.drifted.join(", ")})${
+          sanitized.removed.length > 0 ? ` and removed ${sanitized.removed.length} stray file(s) (${sanitized.removed.join(", ")})` : ""
+        }`,
+      );
     }
 
     let generation = typeof parsed?.program?.planGeneration === "string"

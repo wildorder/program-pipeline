@@ -89,6 +89,31 @@ export interface CheckpointMemory {
   at: string;
 }
 
+/** One attempt at a unit of work — `build:WS-03`, `replan`, `author:WS-07`. */
+export interface AttemptRecord {
+  runId: string;
+  attempt: number;
+  outcome: "failed" | "succeeded";
+  reason?: string;
+  /** Bounded output excerpt — the evidence that mattered, never a log path. */
+  excerpt?: string;
+  failedCommand?: string;
+  at: string;
+}
+
+/** A stage-level structural diagnosis (cycle, unmet requirement, oversize). */
+export interface DiagnosisRecord {
+  stage: string;
+  outcome: string;
+  reason: string;
+  detail?: string;
+  runId: string;
+  at: string;
+}
+
+const MAX_ATTEMPTS_PER_UNIT = 8;
+const MAX_DIAGNOSES = 20;
+
 export interface ProgramMemoryView {
   schemaVersion: typeof MEMORY_SCHEMA_VERSION;
   programId: string;
@@ -96,6 +121,8 @@ export interface ProgramMemoryView {
   runs: RunSummary[];
   findings: Record<string, FindingMemory>;
   checkpoints: Record<string, CheckpointMemory>;
+  attempts: Record<string, AttemptRecord[]>;
+  diagnoses: DiagnosisRecord[];
 }
 
 interface EventBase {
@@ -155,6 +182,22 @@ export type MemoryEvent =
       id: string;
       decision: "waived" | "upheld";
       rationale: string;
+    })
+  | (EventBase & {
+      kind: "attempt-recorded";
+      unit: string;
+      attempt: number;
+      outcome: "failed" | "succeeded";
+      reason?: string;
+      excerpt?: string;
+      failedCommand?: string;
+    })
+  | (EventBase & {
+      kind: "stage-diagnosis";
+      stage: string;
+      outcome: string;
+      reason: string;
+      detail?: string;
     });
 
 type DistributeInput<T> = T extends unknown ? Omit<T, "at" | "runId"> : never;
@@ -177,6 +220,8 @@ function emptyView(programId: string): ProgramMemoryView {
     runs: [],
     findings: {},
     checkpoints: {},
+    attempts: {},
+    diagnoses: [],
   };
 }
 
@@ -252,6 +297,38 @@ export function reduceMemoryEvents(
       continue;
     }
     if (event.kind === "round-completed") continue;
+    if (event.kind === "attempt-recorded") {
+      const records = (view.attempts[event.unit] ??= []);
+      records.push({
+        runId: event.runId,
+        attempt: event.attempt,
+        outcome: event.outcome,
+        ...(event.reason === undefined ? {} : { reason: event.reason }),
+        ...(event.excerpt === undefined ? {} : { excerpt: event.excerpt }),
+        ...(event.failedCommand === undefined
+          ? {}
+          : { failedCommand: event.failedCommand }),
+        at: event.at,
+      });
+      if (records.length > MAX_ATTEMPTS_PER_UNIT) {
+        records.splice(0, records.length - MAX_ATTEMPTS_PER_UNIT);
+      }
+      continue;
+    }
+    if (event.kind === "stage-diagnosis") {
+      view.diagnoses.push({
+        stage: event.stage,
+        outcome: event.outcome,
+        reason: event.reason,
+        ...(event.detail === undefined ? {} : { detail: event.detail }),
+        runId: event.runId,
+        at: event.at,
+      });
+      if (view.diagnoses.length > MAX_DIAGNOSES) {
+        view.diagnoses.splice(0, view.diagnoses.length - MAX_DIAGNOSES);
+      }
+      continue;
+    }
     if (event.kind === "finding-raised") {
       const existing = view.findings[event.finding.id];
       if (existing) {
@@ -465,6 +542,16 @@ export function priorRunFindings(
     });
   }
   return entries;
+}
+
+/** The unit's most recent attempt, when that attempt failed — the state a
+ * resumed run must not rediscover from scratch. */
+export function lastFailedAttempt(
+  view: ProgramMemoryView,
+  unit: string,
+): AttemptRecord | undefined {
+  const last = view.attempts[unit]?.at(-1);
+  return last?.outcome === "failed" ? last : undefined;
 }
 
 export function countByStatus(

@@ -620,6 +620,25 @@ their reasons, per-round critic and writer summaries, and the waived-finding
 fingerprints behind a risk-waived receipt — so `waivedFindings` in a
 convergence receipt is now resolvable instead of opaque.
 
+Memory also carries **attempt history** across processes. A build that fails
+a workstream records the failure reason, the failing command, and a bounded
+output excerpt under `build:{WS-ID}`; when a later run resumes that
+workstream, its first attempt starts from the recorded diagnosis instead of
+the plain first-attempt prompt — previously that knowledge died with the
+process, and a resumed build rediscovered the failure from scratch. The
+automatic replanner records each accepted and rejected attempt (with the
+replanner's own summary as the rationale) under `replan`, and reads them back
+into every subsequent cycle's brief — a fresh replan report starts with an
+empty history, so memory is the only view cycle 3 has of cycle 1. The
+author's three report-less `REQUIRES_REPLAN` exits — dependency cycles, unmet
+requirements, physically oversized workstreams — land as durable
+`stage-diagnosis` records instead of a prose reason plus a gitignored event
+line.
+
+Because memory files are runner output, they are excluded from the build's
+dirty-tree guard and no-op tree signature (a memory append is never
+workstream work) and are committed with the stage that wrote them.
+
 Inspect it any time:
 
 ```sh

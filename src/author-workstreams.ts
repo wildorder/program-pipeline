@@ -38,6 +38,7 @@ import { extractJson, hasArrayKey } from "./validate-loop.js";
 import { SPEC_CONTRACT } from "./validate.js";
 import { ignoredArtifacts } from "./artifact-status.js";
 import { identify } from "./findings.js";
+import { appendMemoryEvents } from "./program-memory.js";
 import { writeReplanReport } from "./replan-report.js";
 import {
   LEGACY_PLAN_GENERATION,
@@ -531,6 +532,34 @@ export async function authorWorkstreams(
       `${JSON.stringify({ timestamp: now().toISOString(), event, ...data })}\n`,
       "utf8",
     );
+  };
+
+  // Structural diagnoses (cycles, unmet requirements, physically oversized
+  // workstreams) go into program memory as well as the gitignored events
+  // log: they end the run REQUIRES_REPLAN without a replan report, so
+  // memory is the only durable, committed record of why.
+  const recordDiagnosis = async (
+    outcome: string,
+    reason: string,
+    detail?: string,
+  ): Promise<void> => {
+    try {
+      await appendMemoryEvents(root, options.programId, [
+        {
+          kind: "stage-diagnosis",
+          stage: "author",
+          outcome,
+          reason,
+          ...(detail === undefined ? {} : { detail }),
+          at: now().toISOString(),
+          runId: `author-${stamp}`,
+        },
+      ]);
+    } catch (error) {
+      progress(
+        `WARNING: could not write program memory: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   };
 
   const shared = {
@@ -1047,6 +1076,11 @@ file. Do not change requirements, implementation scope, or any other section.`;
         cycles: reconciled.cycles,
       });
       progress(`pass ${pass}: merging declared edges would cycle: ${detail}`);
+      await recordDiagnosis(
+        "requires-replan",
+        "Merging author-declared dependencies would create a cycle; the workstreams are badly decomposed, not badly recorded.",
+        detail,
+      );
       reconciliation.push({
         pass,
         added: [],
@@ -1088,6 +1122,11 @@ file. Do not change requirements, implementation scope, or any other section.`;
         unmet: reconciled.unmet,
       });
       progress(`pass ${pass}: no workstream provides: ${detail}`);
+      await recordDiagnosis(
+        "requires-replan",
+        "Requirements are provided by no workstream in the program; missing scope is a planning decision.",
+        detail,
+      );
       reconciliation.push({
         pass,
         added: reconciled.added,
@@ -1210,6 +1249,11 @@ file. Do not change requirements, implementation scope, or any other section.`;
       ...outcome.executionFit,
     });
     if (assessment.hardFailure) {
+      await recordDiagnosis(
+        "requires-replan",
+        `${outcome.id}'s minimum estimated working set cannot fit the configured ${config.build.executionProfile.contextWindowTokens}-token context window.`,
+        `lower bound ${assessment.lowerBoundTokens} tokens, estimate ${assessment.workingSetTokens}, upper bound ${assessment.upperBoundTokens}`,
+      );
       return {
         programId: options.programId,
         result: "REQUIRES_REPLAN",

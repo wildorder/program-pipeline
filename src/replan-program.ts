@@ -9,6 +9,7 @@ import {
 } from "./agent-runner.js";
 import { resolveSummary } from "./agent-summary.js";
 import { atomicWriteText } from "./plan-generation.js";
+import { appendMemoryEvents, readProgramMemory } from "./program-memory.js";
 import { loadPipelineConfig, type PipelineConfig } from "./pipeline-config.js";
 import {
   recordReplanAttempt,
@@ -72,6 +73,7 @@ function brief(
   program: string,
   manifest: string,
   previousRejection?: string,
+  priorCycles?: string,
 ): string {
   return `You are the headless replanner for program ${programId}.
 
@@ -111,7 +113,10 @@ Hard rules:
 
 ${previousRejection ? `Your previous attempt was rejected and rolled back. Address every
 item in this rejection before editing again: ${previousRejection}\n` : ""}
-
+${priorCycles ? `Earlier replan cycles on this program (from program memory — a fresh
+report starts a new cycle, so this is your only view of what previous cycles
+tried and why they were accepted or rejected; do not repeat a rejected
+approach):\n${priorCycles}\n` : ""}
 Replan report:
 ---
 ${report}
@@ -276,6 +281,51 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
   const portableManifest = `docs/programs/${options.programId}-manifest.json`;
   let previousRejection: string | undefined;
 
+  // Program memory carries replan history across cycles: each new report
+  // starts with an empty attemptHistory, so without this a third cycle knows
+  // nothing about the first. Failures degrade to a warning, never a block.
+  const replanRunId = `replan-${now().toISOString().replaceAll(":", "-")}-${randomUUID().slice(0, 8)}`;
+  let priorCycles: string | undefined;
+  try {
+    const memory = await readProgramMemory(root, options.programId);
+    const attempts = memory.attempts["replan"] ?? [];
+    if (attempts.length > 0) {
+      priorCycles = attempts
+        .map(
+          (record) =>
+            `- ${record.at} attempt ${record.attempt} (${record.runId}): ${record.outcome}${record.reason ? ` — ${record.reason}` : ""}`,
+        )
+        .join("\n");
+    }
+  } catch (error) {
+    progress(
+      `WARNING: could not read program memory: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const recordAttemptMemory = async (
+    attempt: number,
+    outcome: "failed" | "succeeded",
+    reason: string,
+  ): Promise<void> => {
+    try {
+      await appendMemoryEvents(root, options.programId, [
+        {
+          kind: "attempt-recorded",
+          unit: "replan",
+          attempt,
+          outcome,
+          reason,
+          at: now().toISOString(),
+          runId: replanRunId,
+        },
+      ]);
+    } catch (error) {
+      progress(
+        `WARNING: could not write program memory: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
   const reject = async (
     attempt: number,
     reportBeforeAttempt: string,
@@ -299,6 +349,7 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
       ...(resolutionProofs.length > 0 ? { resolutionProofs } : {}),
     });
     progress(`replanner attempt ${attempt}/2 rejected and rolled back: ${reason}`);
+    await recordAttemptMemory(attempt, "failed", reason);
   };
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -313,6 +364,7 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
         beforeProgram,
         beforeManifest,
         previousRejection,
+        priorCycles,
       ),
       promptMode: agent.promptMode,
       cwd: root,
@@ -441,6 +493,13 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
       resolutionProofs: attemptProofs,
     });
     const summary = resolveSummary(result.output);
+    // The replanner's own account of how it restructured the plan is the one
+    // rationale worth keeping; the boilerplate acceptance reason is not.
+    await recordAttemptMemory(
+      attempt,
+      "succeeded",
+      summary.text || "plan artifacts updated",
+    );
     progress(`replanner complete: ${summary.text || "plan artifacts updated"}`);
     return { result: "COMPLETE", agent: label, generation, changedPaths };
   }

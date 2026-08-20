@@ -252,3 +252,71 @@ describe("journal persistence", () => {
     expect(view.runs).toEqual([]);
   });
 });
+
+describe("attempt history and diagnoses", () => {
+  it("tracks per-unit attempts and exposes the last failure", async () => {
+    const { lastFailedAttempt } = await import("../src/program-memory.js");
+    const events: MemoryEvent[] = [
+      {
+        kind: "attempt-recorded",
+        unit: "build:WS-03",
+        attempt: 1,
+        outcome: "failed",
+        reason: "verification failed",
+        excerpt: "FAIL: expected 2",
+        failedCommand: "npm test",
+        runId: "build-1",
+        at: at(0),
+      },
+    ];
+    let view = reduceMemoryEvents("alpha", events);
+    expect(lastFailedAttempt(view, "build:WS-03")?.failedCommand).toBe(
+      "npm test",
+    );
+    expect(lastFailedAttempt(view, "build:WS-99")).toBeUndefined();
+
+    events.push({
+      kind: "attempt-recorded",
+      unit: "build:WS-03",
+      attempt: 1,
+      outcome: "succeeded",
+      runId: "build-2",
+      at: at(1),
+    });
+    view = reduceMemoryEvents("alpha", events);
+    expect(lastFailedAttempt(view, "build:WS-03")).toBeUndefined();
+    expect(view.attempts["build:WS-03"]).toHaveLength(2);
+  });
+
+  it("caps attempt records per unit at the most recent eight", () => {
+    const events: MemoryEvent[] = Array.from({ length: 11 }, (_, index) => ({
+      kind: "attempt-recorded" as const,
+      unit: "replan",
+      attempt: index + 1,
+      outcome: "failed" as const,
+      reason: `rejection ${index + 1}`,
+      runId: `replan-${index + 1}`,
+      at: at(index),
+    }));
+    const view = reduceMemoryEvents("alpha", events);
+    expect(view.attempts["replan"]).toHaveLength(8);
+    expect(view.attempts["replan"]?.[0]?.reason).toBe("rejection 4");
+    expect(view.attempts["replan"]?.at(-1)?.reason).toBe("rejection 11");
+  });
+
+  it("records stage diagnoses for report-less structural exits", () => {
+    const view = reduceMemoryEvents("alpha", [
+      {
+        kind: "stage-diagnosis",
+        stage: "author",
+        outcome: "requires-replan",
+        reason: "dependency cycle",
+        detail: "WS-01 -> WS-02 -> WS-01",
+        runId: "author-1",
+        at: at(0),
+      },
+    ]);
+    expect(view.diagnoses).toHaveLength(1);
+    expect(view.diagnoses[0]?.detail).toContain("WS-02");
+  });
+});

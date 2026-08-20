@@ -42,6 +42,13 @@ import {
   type AgentConfig,
   type PipelineConfig,
 } from "./pipeline-config.js";
+import {
+  appendMemoryEvents,
+  lastFailedAttempt,
+  readProgramMemory,
+  type MemoryEventInput,
+  type ProgramMemoryView,
+} from "./program-memory.js";
 import { critiqueTests } from "./test-critique.js";
 import { SPEC_CONTRACT, specSection, validateWorkstreams } from "./validate.js";
 
@@ -267,8 +274,9 @@ async function pathExists(path: string): Promise<boolean> {
 async function treeSignature(
   root: string,
   excludeDir?: string,
+  extraExcludes: string[] = [],
 ): Promise<string | undefined> {
-  const pathspec = excludingLogDir(excludeDir);
+  const pathspec = excludingLogDir(excludeDir, extraExcludes);
   try {
     const status = await runProcess(
       "git",
@@ -288,9 +296,20 @@ async function treeSignature(
   }
 }
 
-/** Pathspec limiting a git command to the tree minus the runner's log dir. */
-function excludingLogDir(excludeDir?: string): string[] {
-  return excludeDir ? ["--", ".", `:(exclude)${excludeDir}`] : [];
+/**
+ * Pathspec limiting a git command to the tree minus the runner's own output:
+ * the log directory and, for tree comparisons, the program-memory files —
+ * a memory append is the runner recording state, never workstream work.
+ */
+function excludingLogDir(
+  excludeDir?: string,
+  extraExcludes: string[] = [],
+): string[] {
+  const excludes = [
+    ...(excludeDir ? [`:(exclude)${excludeDir}`] : []),
+    ...extraExcludes.map((path) => `:(exclude)${path}`),
+  ];
+  return excludes.length > 0 ? ["--", ".", ...excludes] : [];
 }
 
 /**
@@ -298,11 +317,20 @@ function excludingLogDir(excludeDir?: string): string[] {
  * runner's own log directory. Empty when the tree is clean or git is
  * unavailable — callers gate on {@link treeSignature} for availability.
  */
-async function dirtyPaths(root: string, excludeDir?: string): Promise<string[]> {
+async function dirtyPaths(
+  root: string,
+  excludeDir?: string,
+  extraExcludes: string[] = [],
+): Promise<string[]> {
   try {
     const status = await runProcess(
       "git",
-      ["status", "--porcelain", "-uall", ...excludingLogDir(excludeDir)],
+      [
+        "status",
+        "--porcelain",
+        "-uall",
+        ...excludingLogDir(excludeDir, extraExcludes),
+      ],
       { cwd: root, shell: false },
     );
     if (status.exitCode !== 0) return [];
@@ -792,8 +820,44 @@ export async function buildProgram(
     );
   };
 
+  // Program memory: prior runs' attempt history in, this run's attempts out.
+  // Failures degrade to a warning — memory must never block a build.
+  let programMemory: ProgramMemoryView | undefined;
+  try {
+    programMemory = await readProgramMemory(root, options.programId);
+  } catch (error) {
+    progress(
+      `WARNING: could not read program memory: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const recordMemory = async (events: MemoryEventInput[]): Promise<void> => {
+    try {
+      await appendMemoryEvents(
+        root,
+        options.programId,
+        events.map(
+          (event) =>
+            ({
+              ...event,
+              at: now().toISOString(),
+              runId: `build-${stamp}`,
+            }) as Parameters<typeof appendMemoryEvents>[2][number],
+        ),
+      );
+    } catch (error) {
+      progress(
+        `WARNING: could not write program memory: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+  await recordMemory([{ kind: "run-started", stage: "build" }]);
+
+  const memoryArtifacts = [
+    `docs/programs/${options.programId}-memory.jsonl`,
+    `docs/programs/${options.programId}-memory.json`,
+  ];
   const signTree = (): Promise<string | undefined> =>
-    treeSignature(root, config.build.logDir);
+    treeSignature(root, config.build.logDir, memoryArtifacts);
   const treeGuardAvailable = (await signTree()) !== undefined;
 
   // The runner owns commits: one per workstream, written only after that
@@ -832,7 +896,7 @@ export async function buildProgram(
   };
 
   if (commitEnabled) {
-    const dirty = await dirtyPaths(root, config.build.logDir);
+    const dirty = await dirtyPaths(root, config.build.logDir, memoryArtifacts);
     if (dirty.length > 0) {
       const leftover = await readLeftoverSignature();
       if (leftover === undefined || leftover !== (await signTree())) {
@@ -915,6 +979,18 @@ export async function buildProgram(
     );
     const logStream = createWriteStream(workstreamLog, { flags: "w" });
     const agentExitCodes: number[] = [];
+    // What the last run recorded about this workstream. A resumed build's
+    // first attempt starts from the prior failure diagnosis instead of the
+    // plain first-attempt prompt — the previous process's knowledge used to
+    // die with it.
+    const priorFailure = programMemory
+      ? lastFailedAttempt(programMemory, `build:${workstream.id}`)
+      : undefined;
+    if (priorFailure) {
+      progress(
+        `${workstream.id} memory: previous run failed this workstream (${(priorFailure.reason ?? "no reason recorded").split(/\r?\n/u)[0] ?? ""}); briefing the agent with that diagnosis`,
+      );
+    }
     let attempts = 0;
     let failedCommand: string | undefined;
     let failureReason = "";
@@ -959,12 +1035,32 @@ export async function buildProgram(
       const maxAttempts = 1 + config.build.maxRecoveryAttempts;
       while (attempts < maxAttempts && !verified) {
         attempts += 1;
+        if (attempts > 1) {
+          await recordMemory([
+            {
+              kind: "attempt-recorded",
+              unit: `build:${workstream.id}`,
+              attempt: attempts - 1,
+              outcome: "failed",
+              reason: failureReason,
+              excerpt: tail(failureOutput, 1200),
+              ...(failedCommand === undefined ? {} : { failedCommand }),
+            },
+          ]);
+        }
         const attemptAgent =
           attempts === 1 ? agent : (recovery?.agent ?? agent);
         const attemptAgentLabel = describeAgent(attemptAgent);
         const prompt =
           attempts === 1
-            ? workstreamPrompt(workstream, verifyCommands)
+            ? priorFailure
+              ? recoveryPrompt(
+                  workstream,
+                  `A previous build run failed this workstream: ${priorFailure.reason ?? "no failure reason was recorded"}`,
+                  priorFailure.excerpt ?? "",
+                  verifyCommands,
+                )
+              : workstreamPrompt(workstream, verifyCommands)
             : recoveryPrompt(
                 workstream,
                 failureReason,
@@ -1330,6 +1426,25 @@ export async function buildProgram(
     } finally {
       await new Promise<void>((resolveStream) => logStream.end(resolveStream));
     }
+
+    await recordMemory([
+      verified
+        ? {
+            kind: "attempt-recorded",
+            unit: `build:${workstream.id}`,
+            attempt: attempts,
+            outcome: "succeeded",
+          }
+        : {
+            kind: "attempt-recorded",
+            unit: `build:${workstream.id}`,
+            attempt: attempts,
+            outcome: "failed",
+            reason: failureReason || "the attempt did not complete",
+            excerpt: tail(failureOutput, 1200),
+            ...(failedCommand === undefined ? {} : { failedCommand }),
+          },
+    ]);
 
     if (verified) {
       // Independent verification only proves the implementation and its tests

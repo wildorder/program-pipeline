@@ -1383,3 +1383,56 @@ describe("buildProgram", () => {
     ).toBe(true);
   });
 });
+
+describe("program memory attempt history", () => {
+  it("briefs a resumed build with the previous run's failure diagnosis", async () => {
+    const root = await fixture({ maxRecoveryAttempts: 0 });
+
+    // Run 1: the agent exits cleanly but independent verification fails.
+    // Historically its diagnosis lived in local variables and died here.
+    const run1 = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      yes: true,
+      agentRunner: async () => ({ exitCode: 0, output: "agent done" }),
+      verifyRunner: async () => ({
+        exitCode: 1,
+        output: "FAIL src/example.spec.ts — expected 2, received 3",
+      }),
+    });
+    expect(run1.result).toBe("FAILED");
+
+    const { readProgramMemory, lastFailedAttempt } = await import(
+      "../src/program-memory.js"
+    );
+    const memory = await readProgramMemory(root, "alpha");
+    const failed = lastFailedAttempt(memory, "build:WS-01");
+    expect(failed?.outcome).toBe("failed");
+    expect(failed?.reason).toContain("independent verification");
+    expect(failed?.excerpt).toContain("expected 2, received 3");
+
+    // Run 2: a fresh process. The first attempt must start from the recorded
+    // failure, not the plain first-attempt prompt.
+    const prompts: string[] = [];
+    const run2 = await buildProgram({
+      cwd: root,
+      programId: "alpha",
+      yes: true,
+      agentRunner: async (invocation: AgentInvocation) => {
+        prompts.push(invocation.prompt);
+        return { exitCode: 0, output: "agent done" };
+      },
+      verifyRunner: pass,
+    });
+    expect(run2.result).toBe("COMPLETE");
+    expect(prompts[0]).toContain("failed its previous build attempt");
+    expect(prompts[0]).toContain("A previous build run failed this workstream");
+    expect(prompts[0]).toContain("expected 2, received 3");
+    // WS-02 never failed, so its prompt stays the plain first-attempt brief.
+    expect(prompts[1]).not.toContain("failed its previous build attempt");
+
+    const after = await readProgramMemory(root, "alpha");
+    expect(lastFailedAttempt(after, "build:WS-01")).toBeUndefined();
+    expect(after.attempts["build:WS-01"]?.at(-1)?.outcome).toBe("succeeded");
+  });
+});

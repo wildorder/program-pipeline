@@ -75,11 +75,36 @@ export function replanHistoryDir(root: string, programId: string): string {
 }
 
 /** Remove the generated handoff once the replacement plan converges. */
+/**
+ * Retire a replan report after convergence succeeds. The report is archived
+ * to the history directory, never deleted: the causal record of why a replan
+ * happened must survive its resolution.
+ */
 export async function clearReplanReport(
   root: string,
   programId: string,
+  now: () => Date = () => new Date(),
 ): Promise<void> {
-  await rm(replanReportPath(root, programId), { force: true });
+  const path = replanReportPath(root, programId);
+  try {
+    await readFile(path, "utf8");
+  } catch {
+    return;
+  }
+  const historyDir = replanHistoryDir(root, programId);
+  await mkdir(historyDir, { recursive: true });
+  const stamp = now().toISOString().replaceAll(":", "-").replace(/\.\d+Z$/u, "Z");
+  const archived = join(
+    historyDir,
+    `${stamp}-${randomUUID().slice(0, 8)}-resolved.json`,
+  );
+  try {
+    await rename(path, archived);
+  } catch {
+    // Cross-device or locked-file fallback: copy, then remove.
+    await atomicWriteText(archived, await readFile(path, "utf8"));
+    await rm(path, { force: true });
+  }
 }
 
 function portableLogPath(root: string, path: string): string {

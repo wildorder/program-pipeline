@@ -288,15 +288,49 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
   let priorCycles: string | undefined;
   try {
     const memory = await readProgramMemory(root, options.programId);
+    const sections: string[] = [];
     const attempts = memory.attempts["replan"] ?? [];
     if (attempts.length > 0) {
-      priorCycles = attempts
-        .map(
+      sections.push(
+        "Replan attempts:",
+        ...attempts.map(
           (record) =>
             `- ${record.at} attempt ${record.attempt} (${record.runId}): ${record.outcome}${record.reason ? ` — ${record.reason}` : ""}`,
-        )
-        .join("\n");
+        ),
+      );
     }
+    if (memory.diagnoses.length > 0) {
+      sections.push(
+        "Stage diagnoses:",
+        ...memory.diagnoses.map(
+          (diagnosis) =>
+            `- ${diagnosis.at} ${diagnosis.stage} (${diagnosis.outcome}): ${diagnosis.reason}${diagnosis.detail ? ` [${diagnosis.detail}]` : ""}`,
+        ),
+      );
+    }
+    const criteria = Object.entries(memory.criteria);
+    if (criteria.length > 0) {
+      sections.push(
+        "Latest plan-audit verdict per success criterion:",
+        ...criteria.map(
+          ([criterionId, verdict]) =>
+            `- ${criterionId}: ${verdict.status} — ${verdict.reason}`,
+        ),
+      );
+    }
+    const humanDecided = Object.values(memory.findings).filter(
+      (entry) => entry.humanDecision !== undefined,
+    );
+    if (humanDecided.length > 0) {
+      sections.push(
+        "Human decisions (authoritative; do not undo them):",
+        ...humanDecided.map(
+          (entry) =>
+            `- ${entry.finding.subject}: ${entry.humanDecision?.decision} — ${entry.humanDecision?.rationale}`,
+        ),
+      );
+    }
+    if (sections.length > 0) priorCycles = sections.join("\n");
   } catch (error) {
     progress(
       `WARNING: could not read program memory: ${error instanceof Error ? error.message : String(error)}`,

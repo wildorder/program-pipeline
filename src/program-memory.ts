@@ -132,6 +132,11 @@ export interface ProgramMemoryView {
   checkpoints: Record<string, CheckpointMemory>;
   attempts: Record<string, AttemptRecord[]>;
   diagnoses: DiagnosisRecord[];
+  /** Latest plan-audit verdict per success criterion — kept even on PASS. */
+  criteria: Record<
+    string,
+    { status: string; reason: string; runId: string; at: string }
+  >;
 }
 
 interface EventBase {
@@ -195,6 +200,12 @@ export type MemoryEvent =
     })
   | (EventBase & { kind: "decision-requested"; id: string; reason: string })
   | (EventBase & {
+      kind: "criterion-assessed";
+      criterionId: string;
+      status: string;
+      reason: string;
+    })
+  | (EventBase & {
       kind: "attempt-recorded";
       unit: string;
       attempt: number;
@@ -233,6 +244,7 @@ function emptyView(programId: string): ProgramMemoryView {
     checkpoints: {},
     attempts: {},
     diagnoses: [],
+    criteria: {},
   };
 }
 
@@ -324,6 +336,15 @@ export function reduceMemoryEvents(
       if (records.length > MAX_ATTEMPTS_PER_UNIT) {
         records.splice(0, records.length - MAX_ATTEMPTS_PER_UNIT);
       }
+      continue;
+    }
+    if (event.kind === "criterion-assessed") {
+      view.criteria[event.criterionId] = {
+        status: event.status,
+        reason: event.reason,
+        runId: event.runId,
+        at: event.at,
+      };
       continue;
     }
     if (event.kind === "stage-diagnosis") {

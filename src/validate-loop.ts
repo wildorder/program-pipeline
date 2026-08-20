@@ -1339,7 +1339,7 @@ export async function validateLoop(
         [...(riskWaived ? [...unresolved.keys()] : []), ...humanWaived],
       );
       convergenceReceipt = receipt.inputHash;
-      await clearReplanReport(root, options.programId);
+      await clearReplanReport(root, options.programId, options.now);
       progress(`convergence receipt: ${receipt.inputHash.slice(0, 12)}`);
     } catch (error) {
       return aborted(

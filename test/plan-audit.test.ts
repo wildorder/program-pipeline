@@ -295,3 +295,31 @@ describe("auditPlan", () => {
     expect(report.planningInstruction).toContain("root-cause class");
   });
 });
+
+describe("program memory persistence", () => {
+  it("persists criterion assessments to memory on a PASSED audit", async () => {
+    const root = await fixture();
+    const result = await auditPlan({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => ({
+        exitCode: 0,
+        output: `\`\`\`json\n${JSON.stringify({
+          criterionAssessments: [assessment("SC-01"), assessment("SC-02")],
+          findings: [],
+          classAnalyses: [],
+          requirementsChangeRequested: false,
+          criteriaPatches: [],
+        })}\n\`\`\``,
+      }),
+    });
+    expect(result.result).toBe("PASSED");
+
+    const { readProgramMemory } = await import("../src/program-memory.js");
+    const memory = await readProgramMemory(root, "alpha");
+    expect(Object.keys(memory.criteria).sort()).toEqual(["SC-01", "SC-02"]);
+    expect(memory.criteria["SC-01"]?.status).toBe("satisfiable");
+    expect(memory.runs.at(-1)?.stage).toBe("plan-audit");
+    expect(memory.runs.at(-1)?.result).toBe("PASSED");
+  });
+});

@@ -10,6 +10,10 @@ import {
 import { summaryContract } from "./agent-summary.js";
 import { identify, haltsConvergence, splitCriterionSubjects, type ClassAnalysis, type IdentifiedFinding } from "./findings.js";
 import { loadPipelineConfig } from "./pipeline-config.js";
+import {
+  appendMemoryEvents,
+  type MemoryEventInput,
+} from "./program-memory.js";
 import { writeReplanReport } from "./replan-report.js";
 import { parseExecutionMode, type ExecutionMode } from "./execution-mode.js";
 import {
@@ -440,6 +444,49 @@ export async function auditPlan(options: PlanAuditOptions): Promise<PlanAuditRes
     };
   }
   const { criterionAssessments, classAnalyses, modeAssessment, reply } = contract;
+  // Persist what the audit verified — on every outcome, PASS included. A
+  // passed audit used to leave nothing behind, so each replan cycle re-derived
+  // the source-grounded criterion analysis from scratch.
+  const recordAudit = async (events: MemoryEventInput[]): Promise<void> => {
+    try {
+      await appendMemoryEvents(
+        root,
+        options.programId,
+        events.map(
+          (event) =>
+            ({
+              ...event,
+              at: (options.now ?? (() => new Date()))().toISOString(),
+              runId: `plan-audit-${runId}`,
+            }) as Parameters<typeof appendMemoryEvents>[2][number],
+        ),
+      );
+    } catch (error) {
+      progress(
+        `WARNING: could not write program memory: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+  await recordAudit([
+    { kind: "run-started", stage: "plan-audit" },
+    ...criterionAssessments.map(({ criterionId, status, reason }) => ({
+      kind: "criterion-assessed" as const,
+      criterionId,
+      status,
+      reason,
+    })),
+    ...(modeAssessment
+      ? [
+          {
+            kind: "stage-diagnosis" as const,
+            stage: "plan-audit",
+            outcome: `execution-mode-${modeAssessment.status}`,
+            reason: modeAssessment.reason,
+            detail: modeAssessment.evidence.join("; "),
+          },
+        ]
+      : []),
+  ]);
   const conflicts = criterionAssessments.filter(({ status }) => status === "conflict");
   const modeFinding = modeAssessment?.status === "inappropriate" ? {
     severity: "blocker" as const,
@@ -493,9 +540,15 @@ export async function auditPlan(options: PlanAuditOptions): Promise<PlanAuditRes
       outcome: "human-required",
       humanDecisionReason: humanReason,
     }, options.now);
+    await recordAudit([{ kind: "loop-finished", stage: "plan-audit", outcome: "human-required", result: "HUMAN_REQUIRED", reason: humanReason }]);
     return { result: "HUMAN_REQUIRED", reason: humanReason, agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, replanReport: written.path, criticLogs };
   }
-  if (conflicts.length === 0 && blocking.length === 0) return { result: "PASSED", agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, ...(modeAssessment ? { modeAssessment } : {}), criticLogs };
-  const written = await writeReplanReport(root, options.programId, config, { summary: `Plan audit found ${blocking.length} blocker/major finding(s) before authoring.`, replanFindings: blocking, relatedFindings: findings, checkpointAssessments: [], criticSummary: conflicts.map(({ criterionId, reason }) => `${criterionId}: ${reason}`).join("; "), criticLogs, classAnalyses, criteriaPatches: reply.criteriaPatches }, options.now);
-  return { result: "REQUIRES_REPLAN", reason: `Plan audit found ${blocking.length} blocker/major finding(s) before authoring.`, agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, ...(modeAssessment ? { modeAssessment } : {}), replanReport: written.path, criticLogs };
+  if (conflicts.length === 0 && blocking.length === 0) {
+    await recordAudit([{ kind: "loop-finished", stage: "plan-audit", outcome: "passed", result: "PASSED" }]);
+    return { result: "PASSED", agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, ...(modeAssessment ? { modeAssessment } : {}), criticLogs };
+  }
+  const auditReason = `Plan audit found ${blocking.length} blocker/major finding(s) before authoring.`;
+  const written = await writeReplanReport(root, options.programId, config, { summary: auditReason, replanFindings: blocking, relatedFindings: findings, checkpointAssessments: [], criticSummary: conflicts.map(({ criterionId, reason }) => `${criterionId}: ${reason}`).join("; "), criticLogs, classAnalyses, criteriaPatches: reply.criteriaPatches }, options.now);
+  await recordAudit([{ kind: "loop-finished", stage: "plan-audit", outcome: "requires-replan", result: "REQUIRES_REPLAN", reason: auditReason }]);
+  return { result: "REQUIRES_REPLAN", reason: auditReason, agent: label, findings, criterionAssessments, classAnalyses, criteriaPatches: reply.criteriaPatches, ...(modeAssessment ? { modeAssessment } : {}), replanReport: written.path, criticLogs };
 }

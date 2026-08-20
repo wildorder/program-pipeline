@@ -639,6 +639,16 @@ Because memory files are runner output, they are excluded from the build's
 dirty-tree guard and no-op tree signature (a memory append is never
 workstream work) and are committed with the stage that wrote them.
 
+A **passed plan-audit persists its evidence** — the latest source-grounded
+verdict per success criterion and the execution-mode assessment land in
+memory, so a later replan cycle reads what was already verified instead of
+re-deriving it. The automatic replanner's brief carries the memory
+projection: prior replan attempts with their rationale, stage diagnoses,
+per-criterion audit verdicts, and human decisions. And convergence success
+now **archives** the replan report to `{id}-replan-history/` instead of
+deleting it — the causal record of why a replan happened survives its
+resolution.
+
 **Deadlocks escalate to a human instead of stalling.** When a finding
 completes a full raise → decline cycle in two separate runs — the critic and
 writer have each held their position twice, with the recorded exchange in

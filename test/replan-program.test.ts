@@ -215,3 +215,34 @@ REPLAN_COMPLETE
     expect(result.generation).toBe("g2");
   });
 });
+
+describe("clearReplanReport", () => {
+  it("archives the resolved report to history instead of deleting it", async () => {
+    const { mkdtemp, mkdir, writeFile, readdir, readFile: read } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { clearReplanReport, replanReportPath, replanHistoryDir } =
+      await import("../src/replan-report.js");
+    const root = await mkdtemp(join(tmpdir(), "program-pipeline-clear-"));
+    await mkdir(join(root, "docs", "programs"), { recursive: true });
+    const report = JSON.stringify({ programId: "alpha", outcome: "requires-replan" });
+    await writeFile(replanReportPath(root, "alpha"), report, "utf8");
+
+    await clearReplanReport(root, "alpha", () => new Date("2026-01-01T00:00:00Z"));
+
+    await expect(read(replanReportPath(root, "alpha"), "utf8")).rejects.toThrow();
+    const archived = await readdir(replanHistoryDir(root, "alpha"));
+    expect(archived).toHaveLength(1);
+    expect(archived[0]).toContain("resolved");
+    expect(await read(join(replanHistoryDir(root, "alpha"), archived[0]!), "utf8")).toBe(report);
+  });
+
+  it("is a no-op when no report exists", async () => {
+    const { mkdtemp } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { clearReplanReport } = await import("../src/replan-report.js");
+    const root = await mkdtemp(join(tmpdir(), "program-pipeline-clear-"));
+    await expect(clearReplanReport(root, "alpha")).resolves.toBeUndefined();
+  });
+});

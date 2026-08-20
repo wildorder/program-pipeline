@@ -1,6 +1,6 @@
 # Program Memory — design pass
 
-Status: proposal (design guidance, not yet scheduled)
+Status: phases 1–5 implemented (see Sequencing; phase 6 remains)
 Date: 2026-08-19
 
 ## The problem, stated precisely
@@ -220,6 +220,11 @@ Two invariants:
   the curated, committed subset.
 
 ## Sequencing (each phase ships alone)
+
+Phases 1–5 are implemented (`src/program-memory.ts`, wired into converge,
+build, author, plan-audit, replan, and as-built; `memory` and `decide` CLI
+commands). Phase 6 — rendering the replan report as a projection of memory —
+remains; `clearReplanReport` already archives instead of deleting.
 
 1. **`src/program-memory.ts`** — zod + JSON Schema types, append/reduce/
    project API, atomic writes, `schemaVersion`, and the `memory <id>`

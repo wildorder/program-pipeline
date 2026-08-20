@@ -957,6 +957,12 @@ reading real source files — entry points, schemas, route registrations,
 infrastructure config — and documenting what exists rather than what the
 program document said would exist.
 
+Its brief also carries the program-memory projection — waived findings with
+their rationale, standing writer declines, structural diagnoses, and units
+whose last attempt failed — so the snapshot's "Known Limitations / Tech
+Debt" section is grounded in what the pipeline actually concluded instead of
+inferred from a blind codebase scan.
+
 The runner then archives a copy to `docs/snapshots/as-built-{program-id}.md`
 itself. Copying a file to a versioned path is deterministic, and handing
 deterministic work to a model is how a snapshot ends up quietly differing

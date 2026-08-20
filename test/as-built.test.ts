@@ -187,3 +187,59 @@ describe("updateAsBuilt", () => {
     expect(result.reason).toContain("No agent configured");
   });
 });
+
+describe("program memory grounding", () => {
+  it("feeds recorded waivers and diagnoses into the snapshot brief", async () => {
+    const root = await fixture();
+    const { appendMemoryEvents } = await import("../src/program-memory.js");
+    const { identify } = await import("../src/findings.js");
+    const finding = identify({
+      severity: "major",
+      category: "coverage",
+      subject: "SC-02",
+      message: "No workstream covers SC-02.",
+      evidence: [{ kind: "concern", named: "uncovered criterion" }],
+    });
+    await appendMemoryEvents(root, "alpha", [
+      {
+        kind: "finding-raised",
+        round: 1,
+        finding,
+        runId: "run-1",
+        at: new Date().toISOString(),
+      },
+      {
+        kind: "human-decision",
+        id: finding.id,
+        decision: "waived",
+        rationale: "ships in phase 2",
+        runId: "decide-1",
+        at: new Date().toISOString(),
+      },
+      {
+        kind: "stage-diagnosis",
+        stage: "author",
+        outcome: "requires-replan",
+        reason: "dependency cycle",
+        detail: "WS-01 -> WS-02 -> WS-01",
+        runId: "author-1",
+        at: new Date().toISOString(),
+      },
+    ]);
+
+    let prompt = "";
+    await updateAsBuilt({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        prompt = invocation.prompt;
+        await writeFile(join(root, "docs", "as-built.md"), "# As-built\n", "utf8");
+        return { exitCode: 0, output: "done" };
+      },
+    });
+    expect(prompt).toContain("Program memory (recorded pipeline conclusions)");
+    expect(prompt).toContain("SC-02");
+    expect(prompt).toContain("ships in phase 2");
+    expect(prompt).toContain("dependency cycle");
+  });
+});

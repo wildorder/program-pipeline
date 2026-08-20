@@ -13,6 +13,7 @@ import {
   summaryLine,
 } from "./agent-summary.js";
 import { loadPipelineConfig, type PipelineConfig } from "./pipeline-config.js";
+import { readProgramMemory } from "./program-memory.js";
 
 /**
  * Snapshot the system that was actually built.
@@ -173,6 +174,55 @@ export async function updateAsBuilt(
   );
   const agentsMd = await readOptional(join(root, "AGENTS.md"));
 
+  // Program memory grounds the "Known Limitations / Tech Debt" section in
+  // what the pipeline actually recorded — waived findings, human decisions,
+  // structural diagnoses, failed attempts — instead of a blind codebase scan.
+  let memorySection = "";
+  try {
+    const memory = await readProgramMemory(root, options.programId);
+    const lines: string[] = [];
+    const carried = Object.values(memory.findings).filter(
+      (entry) => entry.status === "waived" || entry.status === "declined",
+    );
+    if (carried.length > 0) {
+      lines.push("Findings carried as accepted risk or open position:");
+      for (const entry of carried) {
+        const decision = entry.humanDecision
+          ? ` (human ${entry.humanDecision.decision}: ${entry.humanDecision.rationale})`
+          : entry.lastDeclineReason
+            ? ` (writer declined: ${entry.lastDeclineReason})`
+            : "";
+        lines.push(
+          `- [${entry.status}] ${entry.finding.subject}: ${entry.finding.message}${decision}`,
+        );
+      }
+    }
+    if (memory.diagnoses.length > 0) {
+      lines.push("Structural diagnoses recorded during the program:");
+      for (const diagnosis of memory.diagnoses) {
+        lines.push(
+          `- ${diagnosis.stage} (${diagnosis.outcome}): ${diagnosis.reason}`,
+        );
+      }
+    }
+    const failedUnits = Object.entries(memory.attempts).filter(
+      ([, records]) => records.at(-1)?.outcome === "failed",
+    );
+    if (failedUnits.length > 0) {
+      lines.push("Units whose last recorded attempt failed:");
+      for (const [unit, records] of failedUnits) {
+        lines.push(`- ${unit}: ${records.at(-1)?.reason ?? "no reason recorded"}`);
+      }
+    }
+    if (lines.length > 0) {
+      memorySection = `### Program memory (recorded pipeline conclusions)\n\nUse this as source material for Known Limitations / Tech Debt — it is what the pipeline actually concluded, not an inference:\n\n${lines.join("\n")}\n`;
+    }
+  } catch (error) {
+    progress(
+      `WARNING: could not read program memory: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
   const prompt = [
     `# Update the as-built snapshot after program ${options.programId}`,
     "",
@@ -187,6 +237,7 @@ export async function updateAsBuilt(
       ? `### Program document\n\n\`\`\`\n${programDoc}\n\`\`\`\n`
       : "",
     agentsMd ? `### AGENTS.md\n\n\`\`\`\n${agentsMd}\n\`\`\`\n` : "",
+    memorySection,
     "",
     summaryContract(),
   ]

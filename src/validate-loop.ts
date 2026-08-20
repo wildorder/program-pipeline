@@ -35,6 +35,15 @@ import {
   type AgentConfig,
   type PipelineConfig,
 } from "./pipeline-config.js";
+import {
+  appendMemoryEvents,
+  memoryViewPath,
+  priorRunFindings,
+  readProgramMemory,
+  type MemoryEvent,
+  type MemoryEventInput,
+  type PriorRunFinding,
+} from "./program-memory.js";
 import { applySeverityPolicy } from "./severity-policy.js";
 import { clearReplanReport, writeReplanReport } from "./replan-report.js";
 import { validateWorkstreams } from "./validate.js";
@@ -678,6 +687,70 @@ export async function validateLoop(
   const convergenceRunId = `${stamp}-${randomUUID().slice(0, 8)}`;
   const logDir = resolve(root, config.build.logDir);
 
+  // Program memory: what earlier runs concluded. Read failures degrade to a
+  // blank memory and write failures to a warning — memory must never be the
+  // reason a validation run cannot happen. Prior-run findings feed the critic
+  // brief only; they never seed `seen`, because `fresh` detection keys off it
+  // and a pre-seeded ledger would send a legitimately re-raised finding past
+  // the writer straight to cap-reached.
+  const nowIso = (): string => (options.now?.() ?? new Date()).toISOString();
+  let priorRuns: PriorRunFinding[] = [];
+  try {
+    priorRuns = priorRunFindings(
+      await readProgramMemory(root, options.programId),
+    );
+  } catch (error) {
+    progress(`WARNING: could not read program memory: ${jsonError(error)}`);
+  }
+  if (priorRuns.length > 0) {
+    progress(
+      `memory: ${priorRuns.length} unsettled finding(s) from earlier runs; the critic will see the recorded exchanges`,
+    );
+  }
+  const recordMemory = async (
+    events: MemoryEventInput[],
+  ): Promise<void> => {
+    if (events.length === 0) return;
+    try {
+      await appendMemoryEvents(
+        root,
+        options.programId,
+        events.map(
+          (event) =>
+            ({ ...event, at: nowIso(), runId: convergenceRunId }) as MemoryEvent,
+        ),
+      );
+    } catch (error) {
+      progress(`WARNING: could not write program memory: ${jsonError(error)}`);
+    }
+  };
+  const memoryViewRelative = memoryViewPath(root, options.programId)
+    .slice(root.length + 1)
+    .replaceAll("\\", "/");
+  const acceptedDeclines = new Set<string>();
+  await recordMemory([{ kind: "run-started", stage: "converge" }]);
+  const pushRound = async (record: RoundRecord): Promise<void> => {
+    rounds.push(record);
+    await recordMemory([
+      {
+        kind: "round-completed",
+        round: record.round,
+        critic: record.critic,
+        ...(record.writer === undefined ? {} : { writer: record.writer }),
+        raised: record.raised,
+        fresh: record.fresh,
+        applied: record.applied,
+        rejected: record.rejected,
+        ...(record.criticSummary === undefined
+          ? {}
+          : { criticSummary: record.criticSummary }),
+        ...(record.writerSummary === undefined
+          ? {}
+          : { writerSummary: record.writerSummary }),
+      },
+    ]);
+  };
+
   const preserveCriticResponse = async (
     round: number,
     attempt: number,
@@ -738,6 +811,8 @@ export async function validateLoop(
         ({ finding, reason: declined }) => ({ finding, reason: declined }),
       ),
       alreadyRaised: [...seen.values()],
+      priorRuns,
+      memoryViewPath: memoryViewRelative,
     };
 
     progress(
@@ -923,6 +998,50 @@ export async function validateLoop(
     }
 
     const raisedIds = new Set(raised.map(({ id }) => id));
+
+    // Journal what this round concluded. A prior-run decline the critic chose
+    // not to re-raise in a full-program round is an accepted decline: the
+    // critic judged the writer's rationale with the whole program in view and
+    // let it stand, which resolves the exchange rather than leaving it open.
+    {
+      const roundEvents: MemoryEventInput[] = [];
+      for (const finding of raised) {
+        roundEvents.push({ kind: "finding-raised", round, finding });
+        if (finding.downgradedFrom !== undefined) {
+          roundEvents.push({
+            kind: "severity-downgraded",
+            id: finding.id,
+            from: finding.downgradedFrom,
+            reason: finding.downgradeReason ?? "severity policy",
+          });
+        }
+      }
+      for (const assessment of criticReply.checkpointAssessments) {
+        roundEvents.push({
+          kind: "checkpoint-assessed",
+          workstreamId: assessment.workstreamId,
+          status: assessment.status,
+          reason: assessment.reason,
+        });
+      }
+      if (!mayScope) {
+        for (const prior of priorRuns) {
+          if (
+            prior.status === "declined" &&
+            !raisedIds.has(prior.finding.id) &&
+            !acceptedDeclines.has(prior.finding.id)
+          ) {
+            acceptedDeclines.add(prior.finding.id);
+            roundEvents.push({
+              kind: "decline-accepted",
+              round,
+              id: prior.finding.id,
+            });
+          }
+        }
+      }
+      await recordMemory(roundEvents);
+    }
     for (const id of disagreements.keys()) {
       if (!raisedIds.has(id)) {
         unresolved.delete(id);
@@ -939,7 +1058,7 @@ export async function validateLoop(
 
     if (replan.length > 0) {
       replanFindings.push(...replan);
-      rounds.push({
+      await pushRound({
         round,
         critic: critic.label,
         scoped: mayScope,
@@ -981,7 +1100,7 @@ export async function validateLoop(
     }
 
     if (fresh.length === 0) {
-      rounds.push({
+      await pushRound({
         round,
         critic: critic.label,
         scoped: mayScope,
@@ -1060,6 +1179,17 @@ export async function validateLoop(
       disagreements.delete(id);
       unresolved.delete(id);
     }
+    await recordMemory([
+      ...verdict.applied
+        .filter((id) => seen.has(id))
+        .map((id) => ({ kind: "finding-applied", round, id }) as const),
+      ...verdict.rejected
+        .filter(({ id }) => seen.has(id))
+        .map(
+          ({ id, reason: declined }) =>
+            ({ kind: "finding-declined", round, id, reason: declined }) as const,
+        ),
+    ]);
 
     changedWorkstreams = [
       ...new Set(
@@ -1071,7 +1201,7 @@ export async function validateLoop(
       ),
     ];
 
-    rounds.push({
+    await pushRound({
       round,
       critic: critic.label,
       writer: writer.label,
@@ -1138,6 +1268,17 @@ export async function validateLoop(
       );
     }
   }
+
+  await recordMemory([
+    {
+      kind: "loop-finished",
+      stage: "converge",
+      outcome,
+      result: gateFailed ? "FAILED" : "PASSED",
+      ...(reason === undefined ? {} : { reason }),
+      ...(riskWaived ? { waivedFindings: [...unresolved.keys()] } : {}),
+    },
+  ]);
 
   return {
     programId: options.programId,

@@ -163,6 +163,11 @@ async function workingTreeDirty(
     `:(exclude)${logDir}`,
     `:(exclude)docs/programs/${programId}-manifest.json`,
     `:(exclude)docs/programs/${programId}-criteria.md`,
+    // Program memory is runner output committed with the stage that wrote it;
+    // an aborted converge leaves it dirty and the next run must not refuse
+    // to start on the record of why the last one stopped.
+    `:(exclude)docs/programs/${programId}-memory.jsonl`,
+    `:(exclude)docs/programs/${programId}-memory.json`,
   ]);
   if (status.exitCode !== 0) return [];
   return status.output

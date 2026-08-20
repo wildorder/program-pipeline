@@ -592,6 +592,47 @@ the agent's output, marks it `(no summary block)`, and carries on — an agent
 that forgets a fence still did the work, and failing a verified workstream
 over a formatting slip would trade a real result for a cosmetic one.
 
+### Program memory
+
+Every convergence run records what it concluded into a durable, committed
+ledger — `docs/programs/{program-id}-memory.jsonl` (an append-only journal,
+the source of truth) and `docs/programs/{program-id}-memory.json` (the derived
+current-state view, one entry per finding fingerprint no matter how many runs
+re-raised it). Only the runner writes it; agents receive projections in their
+briefs and may read the view file on demand.
+
+This exists because the loop's ledger used to be process-local: a second
+`converge` invocation started blank, so a critic re-raised findings a writer
+had already declined with reasons nobody could see, burned its rounds on an
+argument that had already happened verbatim, and forced a manual replan. Now
+the critic's first-round brief includes every unsettled finding from earlier
+runs with the recorded exchange — raise rationale, decline rationale, counts —
+under one rule: **model output is context, never precedent.** The critic may
+re-raise anything; it just has to engage the recorded decline rationale, the
+same cite-your-cause discipline the severity policy applies. A re-raise that
+ignores the stated rationale gets set aside like an evidence-free finding. A
+prior decline the critic *doesn't* re-raise in a full-program round is an
+accepted decline and resolves the exchange.
+
+The journal also captures what previously evaporated on the happy path:
+checkpoint assessments (safe ones included), severity-policy downgrades with
+their reasons, per-round critic and writer summaries, and the waived-finding
+fingerprints behind a risk-waived receipt — so `waivedFindings` in a
+convergence receipt is now resolvable instead of opaque.
+
+Inspect it any time:
+
+```sh
+npx --yes @wildorder/program-pipeline memory phase-1 --cwd .
+npx --yes @wildorder/program-pipeline memory phase-1 --json
+npx --yes @wildorder/program-pipeline memory phase-1 --finding 3fa9
+```
+
+Memory is deliberately fail-open in one direction only: a read or write
+failure degrades to a warning and a blank memory, never a blocked validation
+run. The view file is regenerable — every read reduces the journal from
+scratch, so hand-editing or corrupting the `.json` costs nothing.
+
 ### Spec validation: the convergence loop
 
 ```sh

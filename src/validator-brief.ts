@@ -7,6 +7,7 @@ import {
   type Finding,
   type IdentifiedFinding,
 } from "./findings.js";
+import type { PriorRunFinding } from "./program-memory.js";
 
 /**
  * The runner composes the validator brief; no caller may append to it.
@@ -319,6 +320,60 @@ export interface RoundContext {
   openDisagreements: Array<{ finding: Finding; reason: string }>;
   /** Everything already raised, so the critic does not simply repeat it. */
   alreadyRaised: Finding[];
+  /** Unsettled findings from earlier runs, read from program memory. */
+  priorRuns?: PriorRunFinding[];
+  /** Where the full memory view lives, for on-demand retrieval. */
+  memoryViewPath?: string;
+}
+
+/**
+ * What earlier *runs* concluded, rendered even in round 1 — this is the
+ * cross-process counterpart of `priorRoundSection`. Model output is context,
+ * never precedent: nothing here forbids re-raising, it requires engaging the
+ * recorded rationale so a repeat carries information instead of burning a
+ * round on an argument that already happened verbatim.
+ */
+function priorRunsSection(context: RoundContext): string {
+  const entries = context.priorRuns ?? [];
+  if (entries.length === 0) return "";
+  const lines: string[] = [
+    "## What earlier runs of this pipeline concluded\n",
+    "This program has been validated before. The findings below are from prior runs and are context, not verdicts — you may re-raise any of them (use the same subject), and you may raise anything new. One rule: when you re-raise a finding a writer declined, engage the recorded decline rationale and say why it does not hold. A re-raise that ignores the stated rationale will be set aside the way an evidence-free finding is.",
+    "",
+  ];
+  for (const entry of entries) {
+    const scope = entry.finding.workstreamId
+      ? `${entry.finding.workstreamId} `
+      : "";
+    const counts =
+      entry.raiseCount > 1 || entry.declineCount > 0
+        ? ` (raised ${entry.raiseCount}x, declined ${entry.declineCount}x)`
+        : "";
+    lines.push(
+      `- [${entry.status}] [${entry.finding.severity}] ${scope}${entry.finding.subject} — ${entry.finding.message}${counts}`,
+    );
+    if (entry.lastDeclineReason) {
+      lines.push(`  - writer's decline rationale: ${entry.lastDeclineReason}`);
+    }
+    if (entry.humanDecision) {
+      lines.push(
+        `  - HUMAN DECISION (${entry.humanDecision.decision}): ${entry.humanDecision.rationale} — a human settled this; re-raise only if the content it judged has since changed.`,
+      );
+    }
+    if (entry.status === "fix-applied") {
+      lines.push(
+        "  - a fix was applied but never confirmed by a clean round; verify it rather than assuming either state.",
+      );
+    }
+  }
+  lines.push("");
+  if (context.memoryViewPath) {
+    lines.push(
+      `The full program memory, including every exchange on each finding, is at \`${context.memoryViewPath}\`. Read it when you need the history behind an entry.`,
+      "",
+    );
+  }
+  return lines.join("\n");
 }
 
 function priorRoundSection(context: RoundContext): string {
@@ -364,6 +419,7 @@ export function composeCriticBrief(
     "",
     CRITERIA,
     "",
+    priorRunsSection(context),
     priorRoundSection(context),
     "## Material",
     "",

@@ -276,6 +276,26 @@ export {
   type Severity,
 } from "./findings.js";
 export {
+  appendMemoryEvents,
+  countByStatus,
+  MEMORY_SCHEMA_VERSION,
+  memoryJournalPath,
+  memoryViewPath,
+  priorRunFindings,
+  readMemoryJournal,
+  readProgramMemory,
+  reduceMemoryEvents,
+  type CheckpointMemory,
+  type Exchange,
+  type FindingMemory,
+  type FindingStatus,
+  type HumanDecision,
+  type MemoryEvent,
+  type PriorRunFinding,
+  type ProgramMemoryView,
+  type RunSummary,
+} from "./program-memory.js";
+export {
   applySeverityPolicy,
   citesCause,
   summarizePolicy,

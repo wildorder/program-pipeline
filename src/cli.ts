@@ -42,6 +42,11 @@ import { installArgv, planSkillInstall } from "./install-wizard.js";
 import { packageVersion } from "./package-assets.js";
 import { createProjectManifest } from "./project-manifest.js";
 import { countBySeverity, sortBySeverity } from "./findings.js";
+import {
+  countByStatus,
+  memoryJournalPath,
+  readProgramMemory,
+} from "./program-memory.js";
 import { validateLoop } from "./validate-loop.js";
 import { validateWorkstreams } from "./validate.js";
 
@@ -943,6 +948,84 @@ program
         }
       }
       if (report.result === "FAILED") process.exitCode = 1;
+    },
+  );
+
+program
+  .command("memory")
+  .description(
+    "Inspect the durable program memory: findings, exchanges, and decisions across runs",
+  )
+  .argument("<program-id>", "Program ID")
+  .option("--cwd <path>", "Project directory", process.cwd())
+  .option("--json", "Print the full memory view", false)
+  .option(
+    "--finding <fingerprint>",
+    "Show one finding's full history (fingerprint prefix accepted)",
+  )
+  .action(
+    async (
+      programId: string,
+      options: { cwd: string; json: boolean; finding?: string },
+    ) => {
+      const view = await readProgramMemory(options.cwd, programId);
+      const entries = Object.entries(view.findings);
+      if (options.finding !== undefined) {
+        const prefix = options.finding.trim();
+        const matches = entries.filter(([id]) => id.startsWith(prefix));
+        if (matches.length === 0) {
+          console.error(`No finding fingerprint starts with "${prefix}".`);
+          process.exitCode = 1;
+          return;
+        }
+        for (const [id, entry] of matches) {
+          console.log(JSON.stringify({ id, ...entry }, null, 2));
+        }
+        return;
+      }
+      if (options.json) {
+        console.log(JSON.stringify(view, null, 2));
+        return;
+      }
+      if (entries.length === 0 && view.runs.length === 0) {
+        console.log(
+          `No program memory recorded for ${programId} (journal: ${memoryJournalPath(options.cwd, programId)}).`,
+        );
+        return;
+      }
+      console.log(`program memory: ${programId}`);
+      console.log(
+        `runs=${view.runs.length} updated=${view.updatedAt || "never"}`,
+      );
+      const counts = countByStatus(view);
+      console.log(
+        `open=${counts.open} fix-applied=${counts["fix-applied"]} declined=${counts.declined} resolved=${counts.resolved} waived=${counts.waived} superseded=${counts.superseded}`,
+      );
+      for (const [id, entry] of entries) {
+        const scope = entry.finding.workstreamId
+          ? ` ${entry.finding.workstreamId}`
+          : "";
+        console.log(
+          `[${entry.status}] [${entry.finding.severity}]${scope} ${entry.finding.subject} (${id}) raised=${entry.raiseCount} declined=${entry.declineCount}`,
+        );
+        if (entry.lastDeclineReason) {
+          console.log(indented(`declined: ${entry.lastDeclineReason}`));
+        }
+        if (entry.humanDecision) {
+          console.log(
+            indented(
+              `human ${entry.humanDecision.decision}: ${entry.humanDecision.rationale}`,
+            ),
+          );
+        }
+      }
+      for (const [workstreamId, checkpoint] of Object.entries(
+        view.checkpoints,
+      )) {
+        console.log(
+          `checkpoint ${workstreamId}: ${checkpoint.status} — ${checkpoint.reason}`,
+        );
+      }
     },
   );
 

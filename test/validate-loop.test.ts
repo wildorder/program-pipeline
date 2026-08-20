@@ -13,6 +13,7 @@ import {
   validateLoop,
 } from "../src/validate-loop.js";
 import { composeCriticBrief, composeWriterBrief } from "../src/validator-brief.js";
+import { readProgramMemory } from "../src/program-memory.js";
 
 const temporaryRoots: string[] = [];
 
@@ -1034,5 +1035,99 @@ describe("convergence loop", () => {
     });
     expect(result.outcome).toBe("converged");
     expect(result.result).toBe("FAILED");
+  });
+});
+
+describe("program memory integration", () => {
+  function recorder(replies: string[]): {
+    runner: (invocation: AgentInvocation) => Promise<CommandResult>;
+    calls: AgentInvocation[];
+  } {
+    const calls: AgentInvocation[] = [];
+    let index = 0;
+    return {
+      calls,
+      runner: async (invocation: AgentInvocation) => {
+        calls.push(invocation);
+        const output = replies[index] ?? criticReply([]);
+        index += 1;
+        return { exitCode: 0, output };
+      },
+    };
+  }
+
+  const blockerReply = criticReply([
+    {
+      severity: "blocker",
+      category: "coverage",
+      subject: "SC-02",
+      message: "No workstream covers SC-02.",
+      evidence: [{ kind: "concern", named: "uncovered criterion" }],
+    },
+  ]);
+
+  it("persists exchanges across runs and briefs the next critic with them", async () => {
+    const root = await project();
+    const id = idOf({
+      severity: "blocker",
+      category: "coverage",
+      subject: "SC-02",
+    });
+
+    // Run 1: the critic raises a blocker, the writer declines it, and the
+    // round cap ends the run FAILED — historically the point where all of
+    // this evaporated with the process.
+    const first = recorder([
+      blockerReply,
+      writerReply(
+        [],
+        [[id, "SC-02 is explicitly out of scope for this program"]],
+      ),
+    ]);
+    const run1 = await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      rounds: 1,
+      agentRunner: first.runner,
+    });
+    expect(run1.outcome).toBe("cap-reached");
+    expect(run1.result).toBe("FAILED");
+
+    const afterRun1 = await readProgramMemory(root, "alpha");
+    const entry = afterRun1.findings[id];
+    expect(entry?.status).toBe("declined");
+    expect(entry?.lastDeclineReason).toContain("out of scope");
+    expect(afterRun1.checkpoints["WS-01"]?.status).toBe("safe");
+
+    // Run 2: a fresh process. The critic must see the prior exchange in its
+    // first-round brief, and its clean full-program round accepts the decline.
+    const second = recorder([criticReply([])]);
+    const run2 = await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      rounds: 1,
+      agentRunner: second.runner,
+    });
+    const criticPrompt = second.calls[0]?.prompt ?? "";
+    expect(criticPrompt).toContain("What earlier runs of this pipeline concluded");
+    expect(criticPrompt).toContain("SC-02");
+    expect(criticPrompt).toContain("out of scope for this program");
+    expect(criticPrompt).toContain("docs/programs/alpha-memory.json");
+    expect(run2.outcome).toBe("converged");
+    expect(run2.result).toBe("PASSED");
+
+    const afterRun2 = await readProgramMemory(root, "alpha");
+    expect(afterRun2.findings[id]?.status).toBe("resolved");
+    expect(afterRun2.runs.length).toBeGreaterThanOrEqual(2);
+    expect(afterRun2.runs.at(-1)?.outcome).toBe("converged");
+  });
+
+  it("never briefs a first run with a prior-runs section", async () => {
+    const root = await project();
+    const { runner, calls } = recorder([criticReply([])]);
+    await validateLoop({ cwd: root, programId: "alpha", agentRunner: runner });
+    expect(calls[0]?.prompt).not.toContain(
+      "What earlier runs of this pipeline concluded",
+    );
   });
 });

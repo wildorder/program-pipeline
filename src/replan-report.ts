@@ -1,20 +1,79 @@
 import { access, mkdir, readFile, rename, rm } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import type { ClassAnalysis, IdentifiedFinding } from "./findings.js";
+import { normalizeSubject, type ClassAnalysis, type IdentifiedFinding } from "./findings.js";
 import type { PipelineConfig } from "./pipeline-config.js";
 import type { CheckpointAssessment } from "./validate-loop.js";
 import type { CriteriaPatch } from "./validate-loop.js";
 import { atomicWriteText } from "./plan-generation.js";
 
-export const REPLAN_REPORT_VERSION = 4;
+export const REPLAN_REPORT_VERSION = 5;
 
 export type ReplanReportOutcome = "requires-replan" | "human-required";
 
+export interface ProofObligationMember {
+  /** Pipeline-minted token the replanner echoes, e.g. "P2.3". */
+  id: string;
+  /** The checked subject's prose, display-only. */
+  text: string;
+  /** True when this member is in affectedSubjects and must be dispositioned fixed. */
+  affected: boolean;
+}
+
+/**
+ * One closure obligation the replanner must prove, keyed by a pipeline-minted
+ * ID. IDs exist because free-text subjects are authored by one model and were
+ * previously re-typed by another: exact matching of model output is only
+ * legitimate on opaque tokens that code minted, so code mints them.
+ */
+export interface ProofObligation {
+  id: string;
+  subject: string;
+  members: ProofObligationMember[];
+}
+
+/**
+ * Derive the obligation roster from a report's findings and class analyses.
+ * Deterministic, so a legacy report without a persisted roster resolves to
+ * the same IDs.
+ */
+export function buildProofObligations(report: {
+  replanFindings?: Array<{ subject: string }>;
+  relatedFindings?: Array<{ subject: string; severity: string }>;
+  classAnalyses?: ClassAnalysis[];
+}): ProofObligation[] {
+  const subjects = [...new Set([
+    ...(report.replanFindings ?? []).map(({ subject }) => subject),
+    ...(report.relatedFindings ?? [])
+      .filter(({ severity }) => severity === "blocker" || severity === "major")
+      .map(({ subject }) => subject),
+    ...(report.classAnalyses ?? []).map(({ subject }) => subject),
+  ])];
+  const analyses = new Map(
+    (report.classAnalyses ?? []).map((analysis) => [normalizeSubject(analysis.subject), analysis]),
+  );
+  return subjects.map((subject, index) => {
+    const id = `P${index + 1}`;
+    const analysis = analyses.get(normalizeSubject(subject));
+    const affected = new Set((analysis?.affectedSubjects ?? []).map(normalizeSubject));
+    return {
+      id,
+      subject,
+      members: (analysis?.checkedSubjects ?? []).map((text, memberIndex) => ({
+        id: `${id}.${memberIndex + 1}`,
+        text,
+        affected: affected.has(normalizeSubject(text)),
+      })),
+    };
+  });
+}
+
 export interface ReplanResolutionProof {
+  /** Obligation reference: its pipeline-minted ID, or legacy subject text. */
   subject: string;
   changedPaths: string[];
   dispositions: Array<{
+    /** Member reference: its pipeline-minted ID, or legacy subject text. */
     subject: string;
     disposition: "fixed" | "already-correct";
     evidence: Array<{ path: string; detail: string }>;
@@ -52,6 +111,8 @@ export interface ReplanReport {
   relatedFindings: IdentifiedFinding[];
   /** Root-cause closure obligations discovered by the plan/spec critic. */
   classAnalyses: ClassAnalysis[];
+  /** ID-keyed proof roster; resolutionProofs reference these IDs, not prose. */
+  proofObligations: ProofObligation[];
   /** Intent-preserving criterion repairs the replanner is allowed to apply. */
   criteriaPatches: CriteriaPatch[];
   checkpointAssessments: CheckpointAssessment[];
@@ -211,6 +272,11 @@ export async function writeReplanReport(
     replanFindings: input.replanFindings,
     relatedFindings: input.relatedFindings,
     classAnalyses: input.classAnalyses ?? [],
+    proofObligations: buildProofObligations({
+      replanFindings: input.replanFindings,
+      relatedFindings: input.relatedFindings,
+      classAnalyses: input.classAnalyses ?? [],
+    }),
     criteriaPatches: input.criteriaPatches ?? [],
     checkpointAssessments: input.checkpointAssessments,
     criticSummary: input.criticSummary,

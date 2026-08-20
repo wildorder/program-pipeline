@@ -297,14 +297,18 @@ Every criterionAssessment with status "conflict" also requires a classAnalysis
 whose subject exactly equals that criterionId, whether or not its root cause is
 shared with another criterion.
 
-When a criterion, interface, roster, or rule is repeated, checkedSubjects must
-include every canonical copy: program criterion text, manifest criterion text,
-architecture/design prose, and relevant workstreams[].scope entries, plus the
-runtime implementations. A scope entry is not secondary prose: it is often the
-only copy an author agent sees. Resolve conditional set members against the
-repository; an "only if one exists" member cannot belong to an asserted-equal
-set. Distinguish a reconciled disposition from a token merely appearing in a
-narrative resolution paragraph.
+The manifest is the single source of truth for success-criteria text, the
+workstream roster, dependencies, and scope. The program document must
+reference criteria and workstreams by id without restating their text: flag a
+restated copy that contradicts the manifest as a blocker, and a merely
+duplicated copy as a minor duplication finding naming the manifest as
+canonical. Where repetition is legitimate (architecture prose referencing an
+interface, workstreams[].scope entries), checkedSubjects must include every
+such copy plus the runtime implementations. A scope entry is not secondary
+prose: it is often the only copy an author agent sees. Resolve conditional
+set members against the repository; an "only if one exists" member cannot
+belong to an asserted-equal set. Distinguish a reconciled disposition from a
+token merely appearing in a narrative resolution paragraph.
 
 Assess every success criterion exactly once: ${criterionIds.join(", ") || "(none)"}.
 Each assessment must name the concrete commands/interfaces/paths checked and

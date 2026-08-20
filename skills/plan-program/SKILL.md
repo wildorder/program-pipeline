@@ -80,8 +80,12 @@ union, manifest collection, or the criterion's explicit list. Never fix one
 counterexample and leave equivalent members for the next replan.
 
 For every criterion or interface repair, reconcile all canonical copies: the
-program criterion, manifest criterion, architecture/design prose, and every
-relevant `workstreams[].scope.includes/excludes` entry. Search for superseded
+manifest criterion, architecture/design prose that references it, and every
+relevant `workstreams[].scope.includes/excludes` entry. The manifest is the
+single source of truth for criteria, workstreams, and scope — when the
+program document restates manifest data (older programs did), resolve the
+duplication by replacing the restatement with an `SC-xx`/`WS-xx` reference,
+never by synchronizing two copies. Search for superseded
 phrasing after the edit and explain any intentional remaining occurrence.
 Resolve conditional members such as "only if one exists" against the actual
 repository before placing them in an asserted-equal set.
@@ -170,33 +174,26 @@ Inspect `docs/programs/` for an existing `*-program.md`. Match its structure whe
 ## Technology Choices
 [Only new choices. If none: "No new technology — uses existing stack."]
 
-## Workstreams
-| ID | Workstream | Dependencies | Estimated Effort |
-|----|------------|--------------|------------------|
-[All workstreams.]
-
-**Size key:** S = 1–2 days, M = 3–5 days, L = 5–10 days
-
-## Dependency Graph
-[ASCII workstream dependency flow.]
-
-## Critical Path
-[The longest dependency chain.]
-
-## Scope (In)
-[Included deliverables.]
-
-## Scope (Out)
-[Explicit exclusions.]
-
 ## Risk Register
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 [Key risks.]
 
-## Success Criteria
-[Stable IDs, `SC-01`, `SC-02`, and so on, paired with numbered, verifiable outcomes.]
+## Success Criteria, Workstreams, and Scope
+Canonical in `docs/programs/{program-id}-manifest.json`: success-criteria
+text, the workstream roster, dependencies, sizes, scope, and exclusions live
+there and only there. This document refers to them by id (`SC-xx`, `WS-xx`)
+and never restates their text.
 ```
+
+The program document carries only what the manifest cannot: narrative
+architecture, causal reasoning, and risks. Success criteria, the workstream
+table, the dependency graph, critical path, and scope in/out lists are
+manifest data — do not reproduce them here. Two copies of the same fact drift
+apart, and every drifted copy becomes a plan-audit finding and a replan
+closure obligation. When this section's rule and an older program document's
+structure conflict, this rule wins: delete the duplicated sections rather
+than matching them.
 
 Write the draft directly to `docs/programs/{program-id}-program.md`. Do not
 paste the document into the conversation or ask for approval before saving —
@@ -348,6 +345,9 @@ the command exists to prevent.
   hard line-count or file-count rules.
 - List every package or directory each workstream touches.
 - Use stable `SC-xx` success-criteria IDs for downstream traceability.
+- The manifest is the single source of truth for success criteria,
+  workstreams, dependencies, and scope. The program document references them
+  by id and never restates their text.
 - Give every workstream a `scope` with a specific `summary`, and state
   `excludes` wherever a neighbor might reasonably assume coverage. Authoring
   reads these and refuses to run without them.

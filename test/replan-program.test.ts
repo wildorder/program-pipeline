@@ -103,7 +103,7 @@ describe("replanProgram", () => {
       lastAttempt: { outcome: string; reason: string; failedSubjects: string[]; artifactsLeftOnDisk: boolean };
       attemptHistory: unknown[];
     };
-    expect(report.schemaVersion).toBe(4);
+    expect(report.schemaVersion).toBe(5);
     expect(report.lastAttempt).toMatchObject({
       outcome: "rejected",
       artifactsLeftOnDisk: false,
@@ -161,7 +161,7 @@ REPLAN_COMPLETE
       },
     });
     expect(result.result).toBe("FAILED");
-    expect(result.reason).toContain("missing/duplicate: b");
+    expect(result.reason).toContain("missing/duplicate: P1.2 b");
     const report = JSON.parse(await readFile(join(root, "docs", "programs", "alpha-replan.json"), "utf8")) as {
       lastAttempt: { failedSubjects: string[]; resolutionProofs: unknown[] };
     };
@@ -194,6 +194,63 @@ REPLAN_COMPLETE
     expect(result.reason).toContain("SC-02");
     const persisted = JSON.parse(await readFile(reportPath, "utf8")) as { lastAttempt: { failedSubjects: string[] } };
     expect(persisted.lastAttempt.failedSubjects).toEqual(["SC-01", "SC-02"]);
+  });
+
+  it("accepts an ID-keyed proof referencing the report's obligation roster", async () => {
+    const root = await fixture();
+    const reportPath = join(root, "docs", "programs", "alpha-replan.json");
+    const report = JSON.parse(await readFile(reportPath, "utf8")) as Record<string, unknown>;
+    report.proofObligations = [{
+      id: "P1",
+      subject: "SC-01",
+      members: [
+        { id: "P1.1", text: "a", affected: true },
+        { id: "P1.2", text: "b", affected: false },
+      ],
+    }];
+    await writeFile(reportPath, JSON.stringify(report), "utf8");
+    const keyed = `\`\`\`json
+{"resolutionProofs":[{"obligation":"P1","changedPaths":["docs/programs/alpha-program.md"],"dispositions":[{"member":"P1.1","disposition":"fixed","evidence":[{"path":"docs/programs/alpha-program.md","detail":"corrected the canonical rule"}]},{"member":"P1.2","disposition":"already-correct","evidence":[{"path":"src/b.ts:10","detail":"already implements the corrected rule"}]}],"completenessBasis":"complete registry"}]}
+\`\`\`
+\`\`\`summary
+REPLAN_COMPLETE
+\`\`\``;
+    const prompts: string[] = [];
+    let calls = 0;
+    const result = await replanProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async (invocation) => {
+        calls += 1;
+        prompts.push(invocation.prompt);
+        await writeFile(join(root, "docs", "programs", "alpha-program.md"), "# Alpha\nnew plan\n", "utf8");
+        return { exitCode: 0, output: keyed };
+      },
+    });
+    expect(result.result).toBe("COMPLETE");
+    expect(calls).toBe(1);
+    expect(prompts[0]).toContain("P1.1 [affected — must be fixed]: a");
+    expect(prompts[0]).toContain("P1.2: b");
+  });
+
+  it("derives the same obligation IDs for a legacy report and names them in rejections", async () => {
+    const root = await fixture();
+    const wrongDisposition = `\`\`\`json
+{"resolutionProofs":[{"obligation":"P1","changedPaths":["docs/programs/alpha-program.md"],"dispositions":[{"member":"P1.1","disposition":"already-correct","evidence":[{"path":"src/a.ts:1","detail":"claims correct"}]},{"member":"P1.2","disposition":"already-correct","evidence":[{"path":"src/b.ts:10","detail":"already correct"}]}],"completenessBasis":"registry"}]}
+\`\`\`
+\`\`\`summary
+REPLAN_COMPLETE
+\`\`\``;
+    const result = await replanProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        await writeFile(join(root, "docs", "programs", "alpha-program.md"), "# Alpha\nnew plan\n", "utf8");
+        return { exitCode: 0, output: wrongDisposition };
+      },
+    });
+    expect(result.result).toBe("FAILED");
+    expect(result.reason).toContain("affected subjects must be dispositioned fixed: P1.1 a");
   });
 
   it("matches proof and disposition subjects across case and punctuation differences", async () => {

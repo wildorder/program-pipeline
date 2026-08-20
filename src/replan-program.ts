@@ -18,7 +18,12 @@ import {
 } from "./replan-report.js";
 import { normalizeSubject } from "./findings.js";
 import { extractJson, hasArrayKey, type CriteriaPatch } from "./validate-loop.js";
-import type { ReplanReport, ReplanResolutionProof } from "./replan-report.js";
+import {
+  buildProofObligations,
+  type ProofObligation,
+  type ReplanReport,
+  type ReplanResolutionProof,
+} from "./replan-report.js";
 
 export interface ReplanProgramOptions {
   cwd: string;
@@ -68,11 +73,24 @@ function criteriaChangeAllowed(before: string, after: string, patches: CriteriaP
   return true;
 }
 
+function renderObligations(obligations: ProofObligation[]): string {
+  if (obligations.length === 0) return "(none)";
+  return obligations
+    .map((obligation) => [
+      `- ${obligation.id}: ${obligation.subject}`,
+      ...obligation.members.map(
+        (member) => `  - ${member.id}${member.affected ? " [affected — must be fixed]" : ""}: ${member.text}`,
+      ),
+    ].join("\n"))
+    .join("\n");
+}
+
 function brief(
   programId: string,
   report: string,
   program: string,
   manifest: string,
+  obligations: ProofObligation[],
   previousRejection?: string,
   priorCycles?: string,
 ): string {
@@ -99,21 +117,26 @@ Hard rules:
 - For every classAnalyses entry, inspect the whole checked set and repair the
   root cause across every affected subject. Do not fix only the example that
   triggered the report.
-- Reconcile EVERY checkedSubjects member, including canonical copies in the
-  program document, manifest success criteria, and workstreams[].scope. A
-  member that needs no edit still requires an already-correct disposition with
-  source or artifact evidence. Merely mentioning its name in prose is not a
-  disposition. Every affectedSubjects member must be fixed.
+- Reconcile EVERY checkedSubjects member. The manifest is the single source
+  of truth for success criteria, workstreams, dependencies, and scope; when a
+  member exists because the program document restates manifest data, resolve
+  it by replacing the restatement with an SC-xx/WS-xx reference, never by
+  synchronizing two copies. A member that needs no edit still requires an
+  already-correct disposition with source or artifact evidence. Merely
+  mentioning its name in prose is not a disposition. Every affectedSubjects
+  member must be fixed.
 - Resolve conditional members ("if one exists", "only if present") against
   repository reality before putting them in a set that tests assert equal.
 - Write a concise fenced \`summary\` block ending with REPLAN_COMPLETE.
-- Also return one fenced JSON object with resolutionProofs. The pipeline
-  validates this structure against every classAnalyses.checkedSubjects member
-  and rejects the transaction when any member lacks a disposition. Quote each
-  checked subject as written in the report (matching tolerates case and
-  punctuation differences, nothing more). A subject whose dispositions are all
-  already-correct may use an empty changedPaths array; never invent an edit:
-  { "resolutionProofs": [{ "subject": "SC-03", "changedPaths": ["docs/programs/x-program.md"], "dispositions": [{ "subject": "audit", "disposition": "fixed", "evidence": [{ "path": "docs/programs/x-program.md", "detail": "criterion now matches the audit signature" }] }, { "subject": "surface bind", "disposition": "already-correct", "evidence": [{ "path": "src/commands/surface-bind.ts:40", "detail": "takes no direction argument" }] }], "completenessBasis": "complete command list in SC-03" }] }
+- Also return one fenced JSON object with resolutionProofs. The report's
+  proofObligations array assigns an id to every obligation ("P1") and to every
+  checked-subject member ("P1.2"). Reference those ids — one proof per
+  obligation id, one disposition per member id; never re-type the prose. The
+  pipeline rejects the transaction when any member id lacks a disposition, a
+  disposition lacks evidence, or an affected member is not "fixed". A proof
+  whose dispositions are all already-correct may use an empty changedPaths
+  array; never invent an edit:
+  { "resolutionProofs": [{ "obligation": "P1", "changedPaths": ["docs/programs/x-program.md"], "dispositions": [{ "member": "P1.1", "disposition": "fixed", "evidence": [{ "path": "docs/programs/x-program.md", "detail": "criterion now matches the audit signature" }] }, { "member": "P1.2", "disposition": "already-correct", "evidence": [{ "path": "src/commands/surface-bind.ts:40", "detail": "takes no direction argument" }] }], "completenessBasis": "complete command list in SC-03" }] }
 
 ${previousRejection ? `Your previous attempt was rejected and rolled back. Address every
 item in this rejection before editing again: ${previousRejection}\n` : ""}
@@ -121,6 +144,9 @@ ${priorCycles ? `Earlier replan cycles on this program (from program memory — 
 report starts a new cycle, so this is your only view of what previous cycles
 tried and why they were accepted or rejected; do not repeat a rejected
 approach):\n${priorCycles}\n` : ""}
+Proof obligations (reference exactly these ids in resolutionProofs):
+${renderObligations(obligations)}
+
 Replan report:
 ---
 ${report}
@@ -149,16 +175,24 @@ function parseResolutionProofs(value: unknown): ResolutionProof[] {
   return value.flatMap((item) => {
     if (typeof item !== "object" || item === null) return [];
     const record = item as Record<string, unknown>;
+    // "obligation"/"member" carry pipeline-minted IDs; "subject" is the
+    // legacy prose reference. Either resolves during validation.
+    const subjectRef = typeof record.obligation === "string" && record.obligation.trim() !== ""
+      ? record.obligation
+      : record.subject;
     if (
-      typeof record.subject !== "string" || record.subject.trim() === "" ||
+      typeof subjectRef !== "string" || subjectRef.trim() === "" ||
       typeof record.completenessBasis !== "string" || record.completenessBasis.trim() === ""
     ) return [];
     const dispositions = Array.isArray(record.dispositions)
       ? record.dispositions.flatMap((entry) => {
           if (typeof entry !== "object" || entry === null) return [];
           const disposition = entry as Record<string, unknown>;
+          const memberRef = typeof disposition.member === "string" && disposition.member.trim() !== ""
+            ? disposition.member
+            : disposition.subject;
           if (
-            typeof disposition.subject !== "string" || disposition.subject.trim() === "" ||
+            typeof memberRef !== "string" || memberRef.trim() === "" ||
             (disposition.disposition !== "fixed" && disposition.disposition !== "already-correct") ||
             !Array.isArray(disposition.evidence)
           ) return [];
@@ -174,14 +208,14 @@ function parseResolutionProofs(value: unknown): ResolutionProof[] {
           // it here made validation report the subject as "missing", blaming
           // the wrong defect and burning a retry on misleading feedback.
           return [{
-            subject: disposition.subject.trim(),
+            subject: memberRef.trim(),
             disposition: disposition.disposition as SubjectDisposition["disposition"],
             evidence,
           }];
         })
       : [];
     return [{
-      subject: record.subject.trim(),
+      subject: subjectRef.trim(),
       changedPaths: strings(record.changedPaths),
       dispositions,
       completenessBasis: record.completenessBasis.trim(),
@@ -190,34 +224,35 @@ function parseResolutionProofs(value: unknown): ResolutionProof[] {
 }
 
 /**
- * The gate rejects only semantic failures. Subjects are matched by
- * {@link normalizeSubject}, never by exact string equality — the checked
- * subjects were authored by a different model, and a proof must not fail
- * because the replanner normalized case or punctuation. Surplus proofs and
- * dispositions beyond the obligations are ignored, not rejected: extra rigor
- * is not a defect, and rejecting the whole transaction over it burned
- * attempts on bookkeeping.
+ * The gate rejects only semantic failures, and it joins model output to
+ * obligations through pipeline-minted IDs, never prose equality. A proof
+ * references its obligation as "P2" and each disposition its member as
+ * "P2.3" — opaque tokens code minted, which is the only place exact matching
+ * of model output is legitimate. Legacy prose references still resolve
+ * through {@link normalizeSubject}. Surplus proofs and dispositions beyond
+ * the obligations are ignored, not rejected: extra rigor is not a defect.
  */
 function validateResolutionProofs(
   proofs: ResolutionProof[],
-  report: Partial<ReplanReport>,
+  obligations: ProofObligation[],
   allowedChangedPaths: string[],
 ): { errors: string[]; failedSubjects: string[] } {
-  const obligations = proofObligationSubjects(report);
-  const analyses = new Map(
-    (report.classAnalyses ?? []).map((analysis) => [normalizeSubject(analysis.subject), analysis]),
-  );
-  const byKey = new Map<string, ResolutionProof[]>();
+  const proofsByRef = new Map<string, ResolutionProof[]>();
   for (const proof of proofs) {
-    const key = normalizeSubject(proof.subject);
-    byKey.set(key, [...(byKey.get(key) ?? []), proof]);
+    for (const key of [proof.subject, normalizeSubject(proof.subject)]) {
+      proofsByRef.set(key, [...(proofsByRef.get(key) ?? []).filter((existing) => existing !== proof), proof]);
+    }
   }
   const errors: string[] = [];
   const failed = new Set<string>();
-  for (const subject of obligations) {
-    const matches = byKey.get(normalizeSubject(subject)) ?? [];
+  for (const obligation of obligations) {
+    const matches = [...new Set([
+      ...(proofsByRef.get(obligation.id) ?? []),
+      ...(proofsByRef.get(normalizeSubject(obligation.subject)) ?? []),
+    ])];
+    const { subject } = obligation;
     if (matches.length !== 1) {
-      errors.push(`${subject}: expected exactly one resolution proof, received ${matches.length}`);
+      errors.push(`${subject} (${obligation.id}): expected exactly one resolution proof, received ${matches.length}`);
       failed.add(subject);
       continue;
     }
@@ -227,58 +262,54 @@ function validateResolutionProofs(
       errors.push(`${subject}: changedPaths must name only the program document or manifest (invalid: ${invalidPaths.join(", ")})`);
       failed.add(subject);
     }
-    const analysis = analyses.get(normalizeSubject(subject));
+    const dispositionsByRef = new Map<string, SubjectDisposition[]>();
+    for (const disposition of proof.dispositions) {
+      for (const key of [disposition.subject, normalizeSubject(disposition.subject)]) {
+        dispositionsByRef.set(key, [
+          ...(dispositionsByRef.get(key) ?? []).filter((existing) => existing !== disposition),
+          disposition,
+        ]);
+      }
+    }
+    const forMember = (member: { id: string; text: string }): SubjectDisposition[] =>
+      [...new Set([
+        ...(dispositionsByRef.get(member.id) ?? []),
+        ...(dispositionsByRef.get(normalizeSubject(member.text)) ?? []),
+      ])];
     // A subject whose every disposition is already-correct legitimately has
     // no changed paths; demanding one forced the replanner to fabricate an
     // edit or fail. Anything else must name what it edited.
     const requiresEdit =
-      !analysis ||
+      obligation.members.length === 0 ||
       proof.dispositions.length === 0 ||
-      proof.dispositions.some(({ disposition }) => disposition === "fixed");
+      obligation.members.some((member) => forMember(member)[0]?.disposition === "fixed");
     if (requiresEdit && proof.changedPaths.length === 0) {
       errors.push(`${subject}: changedPaths must name the edited program document or manifest`);
       failed.add(subject);
     }
-    if (!analysis) continue;
-    const dispositions = new Map<string, SubjectDisposition[]>();
-    for (const disposition of proof.dispositions) {
-      const key = normalizeSubject(disposition.subject);
-      dispositions.set(key, [...(dispositions.get(key) ?? []), disposition]);
-    }
-    const forSubject = (item: string): SubjectDisposition[] =>
-      dispositions.get(normalizeSubject(item)) ?? [];
-    const missing = analysis.checkedSubjects.filter((item) => forSubject(item).length !== 1);
+    if (obligation.members.length === 0) continue;
+    const missing = obligation.members.filter((member) => forMember(member).length !== 1);
     if (missing.length > 0) {
-      errors.push(`${subject}: dispositions must cover every checked subject exactly once (missing/duplicate: ${missing.join(", ")})`);
+      errors.push(`${subject}: dispositions must cover every checked subject exactly once (missing/duplicate: ${missing.map(({ id, text }) => `${id} ${text}`).join(", ")})`);
       failed.add(subject);
     }
-    const unproven = analysis.checkedSubjects.filter((item) => {
-      const match = forSubject(item);
+    const unproven = obligation.members.filter((member) => {
+      const match = forMember(member);
       return match.length === 1 && match[0]!.evidence.length === 0;
     });
     if (unproven.length > 0) {
-      errors.push(`${subject}: dispositions lack evidence entries (path and detail) for: ${unproven.join(", ")}`);
+      errors.push(`${subject}: dispositions lack evidence entries (path and detail) for: ${unproven.map(({ id, text }) => `${id} ${text}`).join(", ")}`);
       failed.add(subject);
     }
-    const notFixed = analysis.affectedSubjects.filter(
-      (item) => forSubject(item)[0]?.disposition !== "fixed",
+    const notFixed = obligation.members.filter(
+      (member) => member.affected && forMember(member)[0]?.disposition !== "fixed",
     );
     if (notFixed.length > 0) {
-      errors.push(`${subject}: affected subjects must be dispositioned fixed: ${notFixed.join(", ")}`);
+      errors.push(`${subject}: affected subjects must be dispositioned fixed: ${notFixed.map(({ id, text }) => `${id} ${text}`).join(", ")}`);
       failed.add(subject);
     }
   }
   return { errors, failedSubjects: [...failed] };
-}
-
-function proofObligationSubjects(report: Partial<ReplanReport>): string[] {
-  return [...new Set([
-    ...(report.replanFindings ?? []).map(({ subject }) => subject),
-    ...(report.relatedFindings ?? [])
-      .filter(({ severity }) => severity === "blocker" || severity === "major")
-      .map(({ subject }) => subject),
-    ...(report.classAnalyses ?? []).map(({ subject }) => subject),
-  ])];
 }
 
 export async function replanProgram(options: ReplanProgramOptions): Promise<ReplanProgramResult> {
@@ -295,6 +326,11 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
     readFile(programPath, "utf8"),
   ]);
   const parsedReport = JSON.parse(initialReport) as Partial<ReplanReport>;
+  // Reports from before schema v5 carry no roster; derive the same IDs
+  // deterministically so legacy prose references still validate.
+  const proofObligations = parsedReport.proofObligations?.length
+    ? parsedReport.proofObligations
+    : buildProofObligations(parsedReport);
   if (parsedReport.outcome === "human-required") {
     return {
       result: "ABORTED",
@@ -437,6 +473,7 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
         reportBeforeAttempt,
         beforeProgram,
         beforeManifest,
+        proofObligations,
         previousRejection,
         priorCycles,
       ),
@@ -463,7 +500,7 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
       (value) => hasArrayKey(value, "resolutionProofs"),
     );
     if (!rejection && (typeof proofBlock !== "object" || proofBlock === null)) {
-      const failedSubjects = proofObligationSubjects(parsedReport);
+      const failedSubjects = proofObligations.map(({ subject }) => subject);
       rejection = {
         reason: `Replanner returned no resolutionProofs contract for: ${failedSubjects.join(", ") || "unknown subjects"}.`,
         failedSubjects,
@@ -475,7 +512,7 @@ export async function replanProgram(options: ReplanProgramOptions): Promise<Repl
       );
       const validated = validateResolutionProofs(
         attemptProofs,
-        parsedReport,
+        proofObligations,
         [portableProgram, portableManifest],
       );
       if (validated.errors.length > 0) {

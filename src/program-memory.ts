@@ -40,6 +40,13 @@ export interface HumanDecision {
   decision: "waived" | "upheld";
   rationale: string;
   at: string;
+  /**
+   * The convergence input hash at decision time. A waiver passes the gate
+   * mechanically only while this matches the current hash — any spec, plan,
+   * or config edit lapses it, exactly like criteria approval. Durable never
+   * means irreversible: a later decision replaces it.
+   */
+  scopeHash?: string;
 }
 
 /** One entry in a finding's raise/decline conversation, oldest first. */
@@ -71,6 +78,8 @@ export interface FindingMemory {
   declineCount: number;
   lastDeclineReason?: string;
   humanDecision?: HumanDecision;
+  /** The models deadlocked across runs; a human owns the next move. */
+  pendingDecision?: { reason: string; runId: string; at: string };
 }
 
 export interface RunSummary {
@@ -182,7 +191,9 @@ export type MemoryEvent =
       id: string;
       decision: "waived" | "upheld";
       rationale: string;
+      scopeHash?: string;
     })
+  | (EventBase & { kind: "decision-requested"; id: string; reason: string })
   | (EventBase & {
       kind: "attempt-recorded";
       unit: string;
@@ -421,14 +432,25 @@ export function reduceMemoryEvents(
           decision: event.decision,
           rationale: event.rationale,
           at: event.at,
+          ...(event.scopeHash === undefined
+            ? {}
+            : { scopeHash: event.scopeHash }),
         };
         entry.status = event.decision === "waived" ? "waived" : "open";
+        delete entry.pendingDecision;
         pushExchange(entry, {
           runId: event.runId,
           action: "human-decision",
           rationale: `${event.decision}: ${event.rationale}`,
           at: event.at,
         });
+        break;
+      case "decision-requested":
+        entry.pendingDecision = {
+          reason: event.reason,
+          runId: event.runId,
+          at: event.at,
+        };
         break;
     }
   }
@@ -542,6 +564,31 @@ export function priorRunFindings(
     });
   }
   return entries;
+}
+
+export interface PendingDecision {
+  id: string;
+  finding: IdentifiedFinding;
+  reason: string;
+  lastDeclineReason?: string;
+}
+
+/** Findings waiting on a human `decide` call. */
+export function pendingDecisions(view: ProgramMemoryView): PendingDecision[] {
+  return Object.entries(view.findings).flatMap(([id, entry]) =>
+    entry.pendingDecision === undefined
+      ? []
+      : [
+          {
+            id,
+            finding: entry.finding,
+            reason: entry.pendingDecision.reason,
+            ...(entry.lastDeclineReason === undefined
+              ? {}
+              : { lastDeclineReason: entry.lastDeclineReason }),
+          },
+        ],
+  );
 }
 
 /** The unit's most recent attempt, when that attempt failed — the state a

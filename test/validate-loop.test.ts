@@ -1131,3 +1131,205 @@ describe("program memory integration", () => {
     );
   });
 });
+
+describe("cross-run stalemates and human decisions", () => {
+  function recorder(replies: string[]): {
+    runner: (invocation: AgentInvocation) => Promise<CommandResult>;
+    calls: AgentInvocation[];
+  } {
+    const calls: AgentInvocation[] = [];
+    let index = 0;
+    return {
+      calls,
+      runner: async (invocation: AgentInvocation) => {
+        calls.push(invocation);
+        const output = replies[index] ?? criticReply([]);
+        index += 1;
+        return { exitCode: 0, output };
+      },
+    };
+  }
+
+  const blockerReply = criticReply([
+    {
+      severity: "blocker",
+      category: "coverage",
+      subject: "SC-02",
+      message: "No workstream covers SC-02.",
+      evidence: [{ kind: "concern", named: "uncovered criterion" }],
+    },
+  ]);
+
+  it("escalates a second-run decline to a pending decision, and a human waiver passes the gate", async () => {
+    const root = await project();
+    const id = idOf({
+      severity: "blocker",
+      category: "coverage",
+      subject: "SC-02",
+    });
+    const decline = writerReply([], [[id, "SC-02 is intentionally deferred"]]);
+
+    // Run 1: raise → decline. One decline is a position, not yet a stalemate.
+    const run1 = await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      rounds: 1,
+      agentRunner: recorder([blockerReply, decline]).runner,
+    });
+    expect(run1.result).toBe("FAILED");
+    expect(run1.pendingDecisions).toBeUndefined();
+
+    // Run 2: the critic re-raises with the recorded exchange in view; the
+    // writer declines again. Two full cycles across two runs is a deadlock.
+    const run2 = await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      rounds: 1,
+      agentRunner: recorder([blockerReply, decline]).runner,
+    });
+    expect(run2.result).toBe("FAILED");
+    expect(run2.pendingDecisions).toEqual([id]);
+    expect(run2.reason).toContain("decide alpha");
+
+    const { readProgramMemory, pendingDecisions } = await import(
+      "../src/program-memory.js"
+    );
+    const memory = await readProgramMemory(root, "alpha");
+    expect(pendingDecisions(memory).map((entry) => entry.id)).toEqual([id]);
+
+    // The human waives it, scoped to the current program content.
+    const { appendMemoryEvents } = await import("../src/program-memory.js");
+    const { convergenceInputHash } = await import(
+      "../src/convergence-receipt.js"
+    );
+    const { loadPipelineConfig } = await import("../src/pipeline-config.js");
+    const scopeHash = await convergenceInputHash(
+      root,
+      "alpha",
+      await loadPipelineConfig(root),
+    );
+    await appendMemoryEvents(root, "alpha", [
+      {
+        kind: "human-decision",
+        id,
+        decision: "waived",
+        rationale: "SC-02 ships in phase 2; accepted for this program",
+        scopeHash,
+        at: new Date().toISOString(),
+        runId: "decide-test",
+      },
+    ]);
+
+    // Run 3: even if the critic re-raises and the writer declines again, the
+    // human's scoped waiver settles the gate.
+    const lines: string[] = [];
+    const run3 = await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      rounds: 1,
+      agentRunner: recorder([blockerReply, decline]).runner,
+      onProgress: (line) => lines.push(line),
+    });
+    expect(run3.result).toBe("PASSED");
+    expect(lines.some((line) => line.includes("human waiver"))).toBe(true);
+    const receipt = JSON.parse(
+      await readFile(
+        join(root, "docs", "programs", "alpha-convergence.json"),
+        "utf8",
+      ),
+    ) as { waivedFindings?: string[] };
+    expect(receipt.waivedFindings).toContain(id);
+  });
+
+  it("lapses a waiver when the program content changes after the decision", async () => {
+    const root = await project();
+    const id = idOf({
+      severity: "blocker",
+      category: "coverage",
+      subject: "SC-02",
+    });
+    const { appendMemoryEvents } = await import("../src/program-memory.js");
+    await appendMemoryEvents(root, "alpha", [
+      {
+        kind: "finding-raised",
+        round: 1,
+        finding: {
+          severity: "blocker",
+          category: "coverage",
+          subject: "SC-02",
+          message: "No workstream covers SC-02.",
+          evidence: [{ kind: "concern", named: "uncovered criterion" }],
+          workstreamId: "WS-01",
+          id,
+        },
+        at: new Date().toISOString(),
+        runId: "run-0",
+      },
+      {
+        kind: "human-decision",
+        id,
+        decision: "waived",
+        rationale: "accepted",
+        scopeHash: "0".repeat(64),
+        at: new Date().toISOString(),
+        runId: "decide-test",
+      },
+    ]);
+    const decline = writerReply([], [[id, "intentional"]]);
+    const lines: string[] = [];
+    const result = await validateLoop({
+      cwd: root,
+      programId: "alpha",
+      rounds: 1,
+      agentRunner: recorder([blockerReply, decline]).runner,
+      onProgress: (line) => lines.push(line),
+    });
+    expect(result.result).toBe("FAILED");
+    expect(lines.some((line) => line.includes("lapsed"))).toBe(true);
+  });
+
+  it("tells the writer a human-upheld finding cannot be declined", () => {
+    const finding = {
+      severity: "blocker" as const,
+      category: "coverage" as const,
+      subject: "SC-02",
+      message: "No workstream covers SC-02.",
+      evidence: [],
+      workstreamId: "WS-01",
+      id: "abc123",
+    };
+    const brief = composeWriterBrief(
+      {
+        programId: "alpha",
+        programDoc: "doc",
+        manifest: "{}",
+        specs: [],
+        contextDocs: [],
+      },
+      [finding],
+      {
+        round: 1,
+        totalRounds: 1,
+        scoped: false,
+        expectedWorkstreamIds: ["WS-01"],
+        openDisagreements: [],
+        alreadyRaised: [],
+        priorRuns: [
+          {
+            finding,
+            status: "open",
+            raiseCount: 2,
+            declineCount: 1,
+            humanDecision: {
+              decision: "upheld",
+              rationale: "coverage is required",
+              at: new Date().toISOString(),
+            },
+          },
+        ],
+      },
+    );
+    expect(brief).toContain("A HUMAN UPHELD this finding");
+    expect(brief).toContain("coverage is required");
+  });
+});

@@ -639,6 +639,28 @@ Because memory files are runner output, they are excluded from the build's
 dirty-tree guard and no-op tree signature (a memory append is never
 workstream work) and are committed with the stage that wrote them.
 
+**Deadlocks escalate to a human instead of stalling.** When a finding
+completes a full raise → decline cycle in two separate runs — the critic and
+writer have each held their position twice, with the recorded exchange in
+view — the loop stops re-running the argument: it records a pending decision
+and names the command that settles it:
+
+```sh
+npx --yes @wildorder/program-pipeline decide phase-1                 # list pending
+npx --yes @wildorder/program-pipeline decide phase-1 --finding 3fa9 --waive  --reason "ships in phase 2"
+npx --yes @wildorder/program-pipeline decide phase-1 --finding 3fa9 --uphold --reason "coverage is required"
+```
+
+This is the second human gate, shaped like the first: batched, durable, and
+presented with both positions. A **waiver** is scoped to a content hash of
+the whole program (the convergence input hash) — it passes the gate
+mechanically only while the content the human judged is unchanged, and any
+spec, plan, or config edit lapses it automatically, exactly like criteria
+approval. An **uphold** tells the writer that declining is no longer an
+available outcome. Both are revocable by a later `decide`; durable never
+means irreversible. Model output stays context — only human decisions carry
+authority.
+
 Inspect it any time:
 
 ```sh

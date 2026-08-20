@@ -43,10 +43,14 @@ import { packageVersion } from "./package-assets.js";
 import { createProjectManifest } from "./project-manifest.js";
 import { countBySeverity, sortBySeverity } from "./findings.js";
 import {
+  appendMemoryEvents,
   countByStatus,
   memoryJournalPath,
+  pendingDecisions,
   readProgramMemory,
 } from "./program-memory.js";
+import { convergenceInputHash } from "./convergence-receipt.js";
+import { loadPipelineConfig } from "./pipeline-config.js";
 import { validateLoop } from "./validate-loop.js";
 import { validateWorkstreams } from "./validate.js";
 
@@ -1026,6 +1030,127 @@ program
           `checkpoint ${workstreamId}: ${checkpoint.status} — ${checkpoint.reason}`,
         );
       }
+    },
+  );
+
+program
+  .command("decide")
+  .description(
+    "Settle a deadlocked finding: waive it (passes the gate until the content changes) or uphold it (the writer must fix it)",
+  )
+  .argument("<program-id>", "Program ID")
+  .option("--cwd <path>", "Project directory", process.cwd())
+  .option(
+    "--finding <fingerprint>",
+    "The finding to decide (fingerprint prefix accepted)",
+  )
+  .option("--waive", "Accept the writer's decline; the finding passes the gate", false)
+  .option("--uphold", "Side with the critic; the finding must be fixed", false)
+  .option("--reason <text>", "Why — recorded verbatim and shown to every future agent")
+  .action(
+    async (
+      programId: string,
+      options: {
+        cwd: string;
+        finding?: string;
+        waive: boolean;
+        uphold: boolean;
+        reason?: string;
+      },
+    ) => {
+      const view = await readProgramMemory(options.cwd, programId);
+      if (options.finding === undefined) {
+        const pending = pendingDecisions(view);
+        if (pending.length === 0) {
+          console.log(`No pending decisions for ${programId}.`);
+          return;
+        }
+        console.log(`${pending.length} pending decision(s) for ${programId}:`);
+        for (const entry of pending) {
+          const scope = entry.finding.workstreamId
+            ? ` ${entry.finding.workstreamId}`
+            : "";
+          console.log(
+            `[${entry.finding.severity}]${scope} ${entry.finding.subject} (${entry.id})`,
+          );
+          console.log(indented(`critic: ${entry.finding.message}`));
+          if (entry.lastDeclineReason) {
+            console.log(indented(`writer: ${entry.lastDeclineReason}`));
+          }
+          console.log(indented(entry.reason));
+        }
+        console.log(
+          `\nSettle one with: program-pipeline decide ${programId} --finding <id> --waive|--uphold --reason "..."`,
+        );
+        process.exitCode = 2;
+        return;
+      }
+      if (options.waive === options.uphold) {
+        console.error("Pass exactly one of --waive or --uphold.");
+        process.exitCode = 1;
+        return;
+      }
+      const reason = options.reason?.trim();
+      if (!reason) {
+        console.error(
+          "--reason is required: the rationale is what future critics and writers are shown.",
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const prefix = options.finding.trim();
+      const matches = Object.keys(view.findings).filter((id) =>
+        id.startsWith(prefix),
+      );
+      if (matches.length !== 1) {
+        console.error(
+          matches.length === 0
+            ? `No finding fingerprint starts with "${prefix}".`
+            : `Ambiguous fingerprint prefix "${prefix}" matches: ${matches.join(", ")}.`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const id = matches[0]!;
+      const decision = options.waive ? ("waived" as const) : ("upheld" as const);
+      // A waiver is scoped to the current program content: it passes the gate
+      // only while the convergence input hash matches, and lapses on any
+      // spec, plan, or config edit — exactly like criteria approval.
+      let scopeHash: string | undefined;
+      if (decision === "waived") {
+        try {
+          scopeHash = await convergenceInputHash(
+            options.cwd,
+            programId,
+            await loadPipelineConfig(options.cwd),
+          );
+        } catch (error) {
+          console.error(
+            `Could not compute the waiver's scope hash: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+      }
+      await appendMemoryEvents(options.cwd, programId, [
+        {
+          kind: "human-decision",
+          id,
+          decision,
+          rationale: reason,
+          ...(scopeHash === undefined ? {} : { scopeHash }),
+          at: new Date().toISOString(),
+          runId: `decide-${new Date().toISOString().replaceAll(":", "-")}`,
+        },
+      ]);
+      const entry = view.findings[id];
+      console.log(
+        `${decision}: ${entry?.finding.subject ?? id} (${id})${
+          decision === "waived"
+            ? " — passes the gate until the program content changes"
+            : " — the writer must fix it; declining is no longer an available outcome"
+        }`,
+      );
     },
   );
 

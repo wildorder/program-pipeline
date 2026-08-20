@@ -14,7 +14,10 @@ import {
   summaryLine,
   type AgentSummary,
 } from "./agent-summary.js";
-import { writeConvergenceReceipt } from "./convergence-receipt.js";
+import {
+  convergenceInputHash,
+  writeConvergenceReceipt,
+} from "./convergence-receipt.js";
 import {
   FINDING_CATEGORIES,
   fingerprint,
@@ -43,6 +46,7 @@ import {
   type MemoryEvent,
   type MemoryEventInput,
   type PriorRunFinding,
+  type ProgramMemoryView,
 } from "./program-memory.js";
 import { applySeverityPolicy } from "./severity-policy.js";
 import { clearReplanReport, writeReplanReport } from "./replan-report.js";
@@ -122,6 +126,8 @@ export interface ValidateLoopResult {
   replanReport?: string;
   /** Critic says the user's requirements need a human decision. */
   requirementsChangeRequested?: boolean;
+  /** Cross-run stalemates recorded in memory, awaiting `decide`. */
+  pendingDecisions?: string[];
 }
 
 export interface ValidateLoopOptions {
@@ -694,11 +700,11 @@ export async function validateLoop(
   // and a pre-seeded ledger would send a legitimately re-raised finding past
   // the writer straight to cap-reached.
   const nowIso = (): string => (options.now?.() ?? new Date()).toISOString();
+  let memoryView: ProgramMemoryView | undefined;
   let priorRuns: PriorRunFinding[] = [];
   try {
-    priorRuns = priorRunFindings(
-      await readProgramMemory(root, options.programId),
-    );
+    memoryView = await readProgramMemory(root, options.programId);
+    priorRuns = priorRunFindings(memoryView);
   } catch (error) {
     progress(`WARNING: could not read program memory: ${jsonError(error)}`);
   }
@@ -1230,6 +1236,54 @@ export async function validateLoop(
     ...mechanical.findings.map(identify),
     ...modelFindings,
   ]);
+
+  // Human waivers recorded through `decide` pass the gate mechanically while
+  // the content the human judged is unchanged — the decision's scope hash
+  // must equal the current convergence input hash, the criteria-approval
+  // pattern. Any spec, plan, or config edit lapses the waiver; the finding
+  // then fails the gate again and the human is asked again.
+  const humanWaived: string[] = [];
+  if (memoryView !== undefined && unresolved.size > 0) {
+    const waivable = [...unresolved.values()].filter((finding) => {
+      const decision = memoryView?.findings[finding.id]?.humanDecision;
+      return decision?.decision === "waived" && decision.scopeHash !== undefined;
+    });
+    if (waivable.length > 0) {
+      try {
+        const currentHash = await convergenceInputHash(
+          root,
+          options.programId,
+          config,
+        );
+        for (const finding of waivable) {
+          const decision = memoryView.findings[finding.id]?.humanDecision;
+          if (decision?.scopeHash === currentHash) {
+            humanWaived.push(finding.id);
+            unresolved.delete(finding.id);
+            disagreements.delete(finding.id);
+            progress(
+              `convergence: ${finding.subject} passes under a human waiver: ${decision.rationale}`,
+            );
+          } else {
+            progress(
+              `convergence: the human waiver for ${finding.subject} lapsed — the program content changed after the decision; decide again to renew it`,
+            );
+          }
+        }
+      } catch (error) {
+        progress(
+          `WARNING: could not evaluate human waivers: ${jsonError(error)}`,
+        );
+      }
+    }
+  }
+  // Every finding still keeping the loop open is human-waived: the gate
+  // outcome is a pass by decision, mirroring the allowSemanticRisks waiver.
+  const humanWaiveCovers =
+    outcome === "cap-reached" &&
+    replanFindings.length === 0 &&
+    humanWaived.length > 0 &&
+    unresolved.size === 0;
   const riskWaived =
     options.allowSemanticRisks === true &&
     outcome === "cap-reached" &&
@@ -1242,8 +1296,37 @@ export async function validateLoop(
   }
   const gateFailed =
     mechanical.result === "FAILED" ||
-    (outcome !== "converged" && !riskWaived) ||
+    (outcome !== "converged" && !riskWaived && !humanWaiveCovers) ||
     (unresolved.size > 0 && !riskWaived);
+
+  // A cap-reached gate failure where the same finding was declined in an
+  // earlier run too is a cross-run stalemate: both models argued twice with
+  // full information and did not move. Stop re-running the argument and hand
+  // it to a human as a pending decision.
+  const pendingDecisionIds: string[] = [];
+  if (gateFailed && outcome === "cap-reached" && memoryView !== undefined) {
+    const stalemates = [...disagreements.values()].filter(({ finding }) => {
+      const prior = memoryView?.findings[finding.id];
+      return prior !== undefined && prior.declineCount >= 1;
+    });
+    if (stalemates.length > 0) {
+      await recordMemory(
+        stalemates.map(({ finding, reason: declineReason }) => ({
+          kind: "decision-requested" as const,
+          id: finding.id,
+          reason: `Raised and declined in two separate runs; the models are deadlocked. Latest decline: ${declineReason}`,
+        })),
+      );
+      pendingDecisionIds.push(...stalemates.map(({ finding }) => finding.id));
+      const listing = stalemates
+        .map(({ finding }) => `${finding.id} (${finding.subject})`)
+        .join(", ");
+      reason = `${reason ?? "Round cap reached."}\n${stalemates.length} finding(s) are deadlocked across runs — the critic and writer have each held their position twice. Settle each one with: program-pipeline decide ${options.programId} --finding <id> --waive|--uphold --reason "..." — deadlocked: ${listing}`;
+      progress(
+        `convergence: ${stalemates.length} cross-run stalemate(s) recorded as pending human decisions`,
+      );
+    }
+  }
 
   let convergenceReceipt: string | undefined;
   if (!gateFailed) {
@@ -1253,7 +1336,7 @@ export async function validateLoop(
         options.programId,
         config,
         options.now,
-        riskWaived ? [...unresolved.keys()] : [],
+        [...(riskWaived ? [...unresolved.keys()] : []), ...humanWaived],
       );
       convergenceReceipt = receipt.inputHash;
       await clearReplanReport(root, options.programId);
@@ -1276,7 +1359,14 @@ export async function validateLoop(
       outcome,
       result: gateFailed ? "FAILED" : "PASSED",
       ...(reason === undefined ? {} : { reason }),
-      ...(riskWaived ? { waivedFindings: [...unresolved.keys()] } : {}),
+      ...(riskWaived || humanWaived.length > 0
+        ? {
+            waivedFindings: [
+              ...(riskWaived ? [...unresolved.keys()] : []),
+              ...humanWaived,
+            ],
+          }
+        : {}),
     },
   ]);
 
@@ -1294,6 +1384,9 @@ export async function validateLoop(
     ...(convergenceReceipt === undefined ? {} : { convergenceReceipt }),
     criticLogs,
     ...(replanReport === undefined ? {} : { replanReport }),
+    ...(pendingDecisionIds.length === 0
+      ? {}
+      : { pendingDecisions: pendingDecisionIds }),
   };
 }
 

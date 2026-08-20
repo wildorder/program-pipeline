@@ -439,6 +439,11 @@ export function composeWriterBrief(
   context: RoundContext,
   classAnalyses: ClassAnalysis[] = [],
 ): string {
+  const upheld = new Map(
+    (context.priorRuns ?? [])
+      .filter((entry) => entry.humanDecision?.decision === "upheld")
+      .map((entry) => [entry.finding.id, entry.humanDecision?.rationale ?? ""]),
+  );
   const list = findings
     .map((finding, index) => {
       const scope = finding.workstreamId ? `${finding.workstreamId} ` : "";
@@ -451,7 +456,10 @@ export function composeWriterBrief(
               : `${item.metric}=${item.value}`,
         )
         .join("; ");
-      return `${index + 1}. [id ${finding.id}] [${finding.severity}] ${scope}${finding.subject} — ${finding.message}\n   evidence: ${evidence}`;
+      const upheldNote = upheld.has(finding.id)
+        ? `\n   A HUMAN UPHELD this finding (${upheld.get(finding.id)}); declining it is not an available outcome — fix it.`
+        : "";
+      return `${index + 1}. [id ${finding.id}] [${finding.severity}] ${scope}${finding.subject} — ${finding.message}\n   evidence: ${evidence}${upheldNote}`;
     })
     .join("\n");
   const closure = classAnalyses

@@ -196,6 +196,73 @@ REPLAN_COMPLETE
     expect(persisted.lastAttempt.failedSubjects).toEqual(["SC-01", "SC-02"]);
   });
 
+  it("matches proof and disposition subjects across case and punctuation differences", async () => {
+    const root = await fixture();
+    const fuzzy = `\`\`\`json
+{"resolutionProofs":[{"subject":"sc-01","changedPaths":["docs/programs/alpha-program.md"],"dispositions":[{"subject":"A.","disposition":"fixed","evidence":[{"path":"docs/programs/alpha-program.md","detail":"corrected the canonical rule"}]},{"subject":"\`b\`","disposition":"already-correct","evidence":[{"path":"src/b.ts:10","detail":"already implements the corrected rule"}]}],"completenessBasis":"complete registry"}]}
+\`\`\`
+\`\`\`summary
+REPLAN_COMPLETE
+\`\`\``;
+    let calls = 0;
+    const result = await replanProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        calls += 1;
+        await writeFile(join(root, "docs", "programs", "alpha-program.md"), "# Alpha\nnew plan\n", "utf8");
+        return { exitCode: 0, output: fuzzy };
+      },
+    });
+    expect(result.result).toBe("COMPLETE");
+    expect(calls).toBe(1);
+  });
+
+  it("accepts an already-correct-only subject with no changed paths and ignores surplus proofs", async () => {
+    const root = await fixture();
+    const reportPath = join(root, "docs", "programs", "alpha-replan.json");
+    const report = JSON.parse(await readFile(reportPath, "utf8")) as { classAnalyses: Array<Record<string, unknown>> };
+    report.classAnalyses.push({ subject: "SC-02", scope: "isolated", rootCause: "suspected drift", affectedSubjects: [], checkedSubjects: ["e"], completenessBasis: "single member" });
+    await writeFile(reportPath, JSON.stringify(report), "utf8");
+    const output = `\`\`\`json
+{"resolutionProofs":[{"subject":"SC-01","changedPaths":["docs/programs/alpha-program.md"],"dispositions":[{"subject":"a","disposition":"fixed","evidence":[{"path":"docs/programs/alpha-program.md","detail":"corrected the canonical rule"}]},{"subject":"b","disposition":"already-correct","evidence":[{"path":"src/b.ts:10","detail":"already implements the corrected rule"}]}],"completenessBasis":"complete registry"},{"subject":"SC-02","changedPaths":[],"dispositions":[{"subject":"e","disposition":"already-correct","evidence":[{"path":"src/e.ts:5","detail":"already matches the plan"}]}],"completenessBasis":"single member"},{"subject":"SC-99","changedPaths":["docs/programs/alpha-program.md"],"dispositions":[],"completenessBasis":"surplus rigor"}]}
+\`\`\`
+\`\`\`summary
+REPLAN_COMPLETE
+\`\`\``;
+    const result = await replanProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        await writeFile(join(root, "docs", "programs", "alpha-program.md"), "# Alpha\nnew plan\n", "utf8");
+        return { exitCode: 0, output };
+      },
+    });
+    expect(result.result).toBe("COMPLETE");
+  });
+
+  it("names the disposition lacking evidence instead of reporting the subject missing", async () => {
+    const root = await fixture();
+    const noEvidence = `\`\`\`json
+{"resolutionProofs":[{"subject":"SC-01","changedPaths":["docs/programs/alpha-program.md"],"dispositions":[{"subject":"a","disposition":"fixed","evidence":[{"path":"docs/programs/alpha-program.md","detail":"fixed a"}]},{"subject":"b","disposition":"already-correct","evidence":[]}],"completenessBasis":"registry"}]}
+\`\`\`
+\`\`\`summary
+REPLAN_COMPLETE
+\`\`\``;
+    const result = await replanProgram({
+      cwd: root,
+      programId: "alpha",
+      agentRunner: async () => {
+        await writeFile(join(root, "docs", "programs", "alpha-program.md"), "# Alpha\nnew plan\n", "utf8");
+        return { exitCode: 0, output: noEvidence };
+      },
+    });
+    expect(result.result).toBe("FAILED");
+    expect(result.reason).toContain("lack evidence");
+    expect(result.reason).toContain("b");
+    expect(result.reason).not.toContain("missing/duplicate");
+  });
+
   it("accepts an exact intent-preserving criterion patch with closure proof", async () => {
     const root = await fixture([{ criterionId: "SC-01", kind: "clarification", intentPreserved: true, before: "Old wording", after: "Clarified wording", reason: "matches actual signature shapes" }]);
     const result = await replanProgram({

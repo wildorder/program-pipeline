@@ -112,8 +112,13 @@ export function splitCriterionSubjects(subject: string): string[] {
   return [...new Set(trimmed.split(/\s*[/,+&]\s*/u))];
 }
 
-/** Collapse incidental spelling differences without merging distinct subjects. */
-function normalizeSubject(subject: string): string {
+/**
+ * Collapse incidental spelling differences without merging distinct subjects.
+ * Also the matching key wherever one model must reference subjects another
+ * model authored (e.g. replan resolution proofs against critic class
+ * analyses) — cross-model references must never fail on case or punctuation.
+ */
+export function normalizeSubject(subject: string): string {
   return subject
     .toLowerCase()
     .normalize("NFKD")

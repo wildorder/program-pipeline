@@ -16,6 +16,7 @@ import {
   replanInputHash,
   replanReportPath,
 } from "./replan-report.js";
+import { normalizeSubject } from "./findings.js";
 import { extractJson, hasArrayKey, type CriteriaPatch } from "./validate-loop.js";
 import type { ReplanReport, ReplanResolutionProof } from "./replan-report.js";
 
@@ -107,8 +108,11 @@ Hard rules:
   repository reality before putting them in a set that tests assert equal.
 - Write a concise fenced \`summary\` block ending with REPLAN_COMPLETE.
 - Also return one fenced JSON object with resolutionProofs. The pipeline
-  validates this exact structure against every classAnalyses.checkedSubjects
-  member and rejects the transaction when any member lacks a disposition:
+  validates this structure against every classAnalyses.checkedSubjects member
+  and rejects the transaction when any member lacks a disposition. Quote each
+  checked subject as written in the report (matching tolerates case and
+  punctuation differences, nothing more). A subject whose dispositions are all
+  already-correct may use an empty changedPaths array; never invent an edit:
   { "resolutionProofs": [{ "subject": "SC-03", "changedPaths": ["docs/programs/x-program.md"], "dispositions": [{ "subject": "audit", "disposition": "fixed", "evidence": [{ "path": "docs/programs/x-program.md", "detail": "criterion now matches the audit signature" }] }, { "subject": "surface bind", "disposition": "already-correct", "evidence": [{ "path": "src/commands/surface-bind.ts:40", "detail": "takes no direction argument" }] }], "completenessBasis": "complete command list in SC-03" }] }
 
 ${previousRejection ? `Your previous attempt was rejected and rolled back. Address every
@@ -166,11 +170,14 @@ function parseResolutionProofs(value: unknown): ResolutionProof[] {
               ? [{ path: candidate.path.trim(), detail: candidate.detail.trim() }]
               : [];
           });
-          return evidence.length > 0 ? [{
+          // A disposition with empty evidence is kept, not dropped: dropping
+          // it here made validation report the subject as "missing", blaming
+          // the wrong defect and burning a retry on misleading feedback.
+          return [{
             subject: disposition.subject.trim(),
             disposition: disposition.disposition as SubjectDisposition["disposition"],
             evidence,
-          }] : [];
+          }];
         })
       : [];
     return [{
@@ -182,19 +189,33 @@ function parseResolutionProofs(value: unknown): ResolutionProof[] {
   });
 }
 
+/**
+ * The gate rejects only semantic failures. Subjects are matched by
+ * {@link normalizeSubject}, never by exact string equality — the checked
+ * subjects were authored by a different model, and a proof must not fail
+ * because the replanner normalized case or punctuation. Surplus proofs and
+ * dispositions beyond the obligations are ignored, not rejected: extra rigor
+ * is not a defect, and rejecting the whole transaction over it burned
+ * attempts on bookkeeping.
+ */
 function validateResolutionProofs(
   proofs: ResolutionProof[],
   report: Partial<ReplanReport>,
   allowedChangedPaths: string[],
 ): { errors: string[]; failedSubjects: string[] } {
-  const obligations = new Set(proofObligationSubjects(report));
-  const analyses = new Map((report.classAnalyses ?? []).map((analysis) => [analysis.subject, analysis]));
-  const bySubject = new Map<string, ResolutionProof[]>();
-  for (const proof of proofs) bySubject.set(proof.subject, [...(bySubject.get(proof.subject) ?? []), proof]);
+  const obligations = proofObligationSubjects(report);
+  const analyses = new Map(
+    (report.classAnalyses ?? []).map((analysis) => [normalizeSubject(analysis.subject), analysis]),
+  );
+  const byKey = new Map<string, ResolutionProof[]>();
+  for (const proof of proofs) {
+    const key = normalizeSubject(proof.subject);
+    byKey.set(key, [...(byKey.get(key) ?? []), proof]);
+  }
   const errors: string[] = [];
   const failed = new Set<string>();
   for (const subject of obligations) {
-    const matches = bySubject.get(subject) ?? [];
+    const matches = byKey.get(normalizeSubject(subject)) ?? [];
     if (matches.length !== 1) {
       errors.push(`${subject}: expected exactly one resolution proof, received ${matches.length}`);
       failed.add(subject);
@@ -202,32 +223,51 @@ function validateResolutionProofs(
     }
     const proof = matches[0]!;
     const invalidPaths = proof.changedPaths.filter((path) => !allowedChangedPaths.includes(path));
-    if (proof.changedPaths.length === 0 || invalidPaths.length > 0) {
-      errors.push(`${subject}: changedPaths must name only the program document or manifest${invalidPaths.length ? ` (invalid: ${invalidPaths.join(", ")})` : ""}`);
+    if (invalidPaths.length > 0) {
+      errors.push(`${subject}: changedPaths must name only the program document or manifest (invalid: ${invalidPaths.join(", ")})`);
       failed.add(subject);
     }
-    const analysis = analyses.get(subject);
+    const analysis = analyses.get(normalizeSubject(subject));
+    // A subject whose every disposition is already-correct legitimately has
+    // no changed paths; demanding one forced the replanner to fabricate an
+    // edit or fail. Anything else must name what it edited.
+    const requiresEdit =
+      !analysis ||
+      proof.dispositions.length === 0 ||
+      proof.dispositions.some(({ disposition }) => disposition === "fixed");
+    if (requiresEdit && proof.changedPaths.length === 0) {
+      errors.push(`${subject}: changedPaths must name the edited program document or manifest`);
+      failed.add(subject);
+    }
     if (!analysis) continue;
     const dispositions = new Map<string, SubjectDisposition[]>();
     for (const disposition of proof.dispositions) {
-      dispositions.set(disposition.subject, [...(dispositions.get(disposition.subject) ?? []), disposition]);
+      const key = normalizeSubject(disposition.subject);
+      dispositions.set(key, [...(dispositions.get(key) ?? []), disposition]);
     }
-    const missing = analysis.checkedSubjects.filter((item) => (dispositions.get(item)?.length ?? 0) !== 1);
-    const unexpected = [...dispositions.keys()].filter((item) => !analysis.checkedSubjects.includes(item));
-    if (missing.length > 0 || unexpected.length > 0) {
-      errors.push(`${subject}: dispositions must cover every checked subject exactly once (missing/duplicate: ${missing.join(", ") || "none"}; unexpected: ${unexpected.join(", ") || "none"})`);
+    const forSubject = (item: string): SubjectDisposition[] =>
+      dispositions.get(normalizeSubject(item)) ?? [];
+    const missing = analysis.checkedSubjects.filter((item) => forSubject(item).length !== 1);
+    if (missing.length > 0) {
+      errors.push(`${subject}: dispositions must cover every checked subject exactly once (missing/duplicate: ${missing.join(", ")})`);
       failed.add(subject);
     }
-    const notFixed = analysis.affectedSubjects.filter((item) =>
-      dispositions.get(item)?.[0]?.disposition !== "fixed",
+    const unproven = analysis.checkedSubjects.filter((item) => {
+      const match = forSubject(item);
+      return match.length === 1 && match[0]!.evidence.length === 0;
+    });
+    if (unproven.length > 0) {
+      errors.push(`${subject}: dispositions lack evidence entries (path and detail) for: ${unproven.join(", ")}`);
+      failed.add(subject);
+    }
+    const notFixed = analysis.affectedSubjects.filter(
+      (item) => forSubject(item)[0]?.disposition !== "fixed",
     );
     if (notFixed.length > 0) {
       errors.push(`${subject}: affected subjects must be dispositioned fixed: ${notFixed.join(", ")}`);
       failed.add(subject);
     }
   }
-  const unexpectedProofs = [...bySubject.keys()].filter((subject) => !obligations.has(subject));
-  if (unexpectedProofs.length > 0) errors.push(`unexpected resolution proofs: ${unexpectedProofs.join(", ")}`);
   return { errors, failedSubjects: [...failed] };
 }
 

@@ -333,7 +333,9 @@ npx --yes @wildorder/program-pipeline run "{program-id}"
 ```
 
 The run begins with an independent `plan-audit` before authoring. Point the
-user at that command and stop. Authoring a spec inside this session
+user at that command — or at `/run-program {program-id}`, which starts the
+same run with the agent watching it as a non-interfering orchestrator — and
+stop. Authoring a spec inside this session
 would write it in a context already carrying the whole planning conversation,
 compose its own instructions, and then grade its own output — which is what
 the command exists to prevent.

@@ -1044,15 +1044,30 @@ The trailing tag is the detection state and which resolution layer chose the
 path (`flag`, `env`, or `default`) — start here when an install lands somewhere
 your agent does not read.
 
-## Skills, and why there are only two
+## Skills, and why there are only three
 
-Two skills install into your agent. Both are the steps where a human decides
-something:
+Three skills install into your agent. Two are the steps where a human
+decides something:
 
 1. `/init-project` — set the project up: greenfield or brownfield, git, and
    which model fills each of the three roles.
 2. `/plan-program` — turn the vision and current as-built state into a
    program plan, a manifest, and a scope for every workstream.
+
+The third is the opposite of a judgment step:
+
+3. `/run-program` — orchestrate a full run **as a watcher**. The agent
+   starts `program-pipeline run`, streams the output, resumes through
+   recoverable stops (criteria approval, build resume, agent-environment
+   recovery), and surfaces every human gate — the criteria document, pending
+   `decide` deadlocks with both positions quoted, requirements decisions —
+   to you instead of answering them. Its instructions forbid the historical
+   failure mode: it never edits program artifacts mid-run, never composes or
+   amends a pipeline agent's prompt, never re-grades a stage's verdict, and
+   never settles a decision itself. Persistence is bounded (three resume
+   cycles per invocation without new human input), so a stuck run ends in a
+   structured status report drawn from program memory, not an infinite
+   babysitting loop.
 
 Everything after planning is `program-pipeline run`, which sequences the
 stages below and commits between them:

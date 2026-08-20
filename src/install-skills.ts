@@ -26,11 +26,18 @@ export {
 } from "./skill-roots.js";
 
 /**
- * The skills that still ship. Both are human-judgment steps that sit outside
- * the automated loop: deciding what to build, and deciding how the project is
- * set up. Everything else became a CLI command that composes its own brief.
+ * The skills that ship. Two are human-judgment steps that sit outside the
+ * automated loop: deciding what to build, and deciding how the project is
+ * set up. The third, `run-program`, is the opposite of judgment — a watcher
+ * that starts `run`, resumes it through recoverable stops, and routes the
+ * pipeline's human gates to the user without answering them. Everything
+ * else became a CLI command that composes its own brief.
  */
-export const WORKFLOWS = ["init-project", "plan-program"] as const;
+export const WORKFLOWS = [
+  "init-project",
+  "plan-program",
+  "run-program",
+] as const;
 
 /**
  * Skills this package used to install and now removes.
